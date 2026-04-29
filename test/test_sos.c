@@ -20,7 +20,7 @@ int main(void)
     /* ── single-section SOS = single biquad ──────────────────────── */
 
     sos_filter_t s1;
-    sos_filter_init(&s1, 1, 10.0f);
+    sos_filter_init(&s1, 1);
 
     float num[3] = {0.2f, 0.4f, 0.2f};
     float den[3] = {1.0f, 0.0f, 0.0f};
@@ -36,7 +36,7 @@ int main(void)
     /* ── identity cascade   ─────────────────────────────────────── */
 
     sos_filter_t id2;
-    sos_filter_init(&id2, 2, 10.0f);
+    sos_filter_init(&id2, 2);
 
     y = sos_filter_update(&id2, 0.5f);
     CHECK(y == 0.5f, "two-section identity DC");
@@ -48,7 +48,7 @@ int main(void)
     /* ── set_section with out-of-bounds index (must not crash) ──── */
 
     sos_filter_t s3;
-    sos_filter_init(&s3, 1, 10.0f);
+    sos_filter_init(&s3, 1);
     sos_filter_set_section(&s3, 5, num, den);  /* OOB, ignored */
     y = sos_filter_update(&s3, 0.5f);
     CHECK(y == 0.5f, "OOB set_section leaves identity");
@@ -65,7 +65,7 @@ int main(void)
     float den1[3] = {1.0f, 0.0f, 0.0f};
 
     sos_filter_t s4;
-    sos_filter_init(&s4, 2, 10.0f);
+    sos_filter_init(&s4, 2);
     sos_filter_set_section(&s4, 0, num0, den0);
     sos_filter_set_section(&s4, 1, num1, den1);
     sos_filter_reset(&s4, 1.0f);
@@ -78,7 +78,7 @@ int main(void)
     /* ── get_input / get_output consistency ──────────────────────── */
 
     sos_filter_t s5;
-    sos_filter_init(&s5, 1, 10.0f);
+    sos_filter_init(&s5, 1);
     sos_filter_set_section(&s5, 0, num, den);
 
     float x = 0.7f;

@@ -1,10 +1,9 @@
 #include "sos_filter.h"
 #include <stdlib.h>
 
-void sos_filter_init(sos_filter_t *filter, uint8_t num_sections, float fs)
+void sos_filter_init(sos_filter_t *filter, uint8_t num_sections)
 {
     filter->num_sections = num_sections;
-    filter->fs = fs;
     filter->sections = (biquad_filter_t *)malloc(num_sections * sizeof(biquad_filter_t));
 
     for (uint8_t i = 0; i < num_sections; i++) {

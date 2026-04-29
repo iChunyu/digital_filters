@@ -13,7 +13,6 @@
  */
 typedef struct {
     uint8_t num_sections;      /**< Number of biquad sections in the cascade */
-    float fs;                  /**< Sampling frequency in Hz                  */
     biquad_filter_t *sections; /**< Array of biquad sections (length num_sections) */
 } sos_filter_t;
 
@@ -21,14 +20,12 @@ typedef struct {
  * @brief Initialise a cascaded SOS filter.
  *
  * Allocates memory for @p num_sections biquad sections and initialises each
- * to unity pass-through (identity).  The sampling frequency @p fs is stored
- * for later s-to-z conversion of individual sections.
+ * to unity pass-through (identity).
  *
  * @param[out] filter       Pointer to the SOS filter object.
  * @param[in]  num_sections Number of second-order sections.
- * @param[in]  fs           Sampling frequency in Hz.
  */
-void sos_filter_init(sos_filter_t *filter, uint8_t num_sections, float fs);
+void sos_filter_init(sos_filter_t *filter, uint8_t num_sections);
 
 /**
  * @brief Free the memory allocated by sos_filter_init().
