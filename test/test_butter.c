@@ -121,6 +121,81 @@ int main(void)
 
     butter_destroy(&b1);
 
+    /* ── BP 2nd-order, fc1=2 Hz, fc2=5 Hz, fs=40 Hz ─────────────────── */
+
+    butter_t bbp;
+    butter_init(&bbp, FILTER_BANDPASS, 2, 2.0f, 5.0f, 40.0f);
+    CHECK(bbp.valid == 1, "BP init valid");
+    CHECK(bbp.sos->num_sections == 2, "BP 2nd-order (4 poles) → 2 sections");
+
+    /* DC gain ≈ 0 */
+    butter_reset(&bbp, 1.0f);
+    y = butter_update(&bbp, 1.0f);
+    CHECK(CLOSE(y, 0.0f, 1e-3f), "BP blocks DC");
+
+    /* Centre frequency gain ≈ 1.0 */
+    float f0 = sqrtf(2.0f * 5.0f); /* ~3.16 Hz */
+    gn = measure_gain(&bbp, f0, 40.0f, 800);
+    CHECK(CLOSE(gn, 1.0f, 0.1f), "BP centre freq gain ~ 1");
+
+    /* Out-of-band attenuation at 20 Hz (Nyquist). */
+    gn = measure_gain(&bbp, 20.0f, 40.0f, 800);
+    CHECK(gn < 0.15f, "BP Nyquist attenuation");
+
+    butter_destroy(&bbp);
+
+    /* ── BP 1st-order (2 poles after doubling) ──────────────────────── */
+
+    butter_t bbp1;
+    butter_init(&bbp1, FILTER_BANDPASS, 1, 3.0f, 6.0f, 40.0f);
+    CHECK(bbp1.valid == 1, "BP 1st-order init");
+    CHECK(bbp1.sos->num_sections == 1, "BP 1st-order → 1 section");
+    butter_destroy(&bbp1);
+
+    /* ── BS 2nd-order, fc1=2 Hz, fc2=5 Hz, fs=40 Hz ─────────────────── */
+
+    butter_t bbs;
+    butter_init(&bbs, FILTER_BANDSTOP, 2, 2.0f, 5.0f, 40.0f);
+    CHECK(bbs.valid == 1, "BS init valid");
+    CHECK(bbs.sos->num_sections == 2, "BS 2nd-order (4 poles) → 2 sections");
+
+    /* DC gain ≈ 1 */
+    butter_reset(&bbs, 1.0f);
+    y = butter_update(&bbs, 1.0f);
+    CHECK(CLOSE(y, 1.0f, 1e-4f), "BS DC gain ~ 1");
+
+    /* Centre frequency attenuation (notch). */
+    gn = measure_gain(&bbs, f0, 40.0f, 800);
+    CHECK(gn < 0.15f, "BS notch at centre freq");
+
+    /* Nyquist gain ≈ 1.0 */
+    butter_reset(&bbs, 0.0f);
+    nyq_gain = 0.0f;
+    for (int n = 0; n < 200; n++) {
+        float x = (n % 2 == 0) ? 1.0f : -1.0f;
+        y = butter_update(&bbs, x);
+        if (n > 100 && fabsf(y) > nyq_gain) nyq_gain = fabsf(y);
+    }
+    CHECK(CLOSE(nyq_gain, 1.0f, 1e-3f), "BS Nyquist gain ~ 1");
+
+    butter_destroy(&bbs);
+
+    /* ── BP/BS invalid: fc1 >= fc2 ──────────────────────────────────── */
+
+    butter_init(&bbp, FILTER_BANDPASS, 2, 5.0f, 2.0f, 40.0f);
+    CHECK(bbp.valid == 0, "BP fc1>=fc2 invalid");
+
+    butter_init(&bbs, FILTER_BANDSTOP, 2, 5.0f, 5.0f, 40.0f);
+    CHECK(bbs.valid == 0, "BS fc1==fc2 invalid");
+
+    /* ── BP/BS invalid: fc2 >= fs/2 ─────────────────────────────────── */
+
+    butter_init(&bbp, FILTER_BANDPASS, 2, 2.0f, 20.0f, 40.0f);
+    CHECK(bbp.valid == 0, "BP fc2=fs/2 invalid");
+
+    butter_init(&bbs, FILTER_BANDSTOP, 2, 2.0f, 25.0f, 40.0f);
+    CHECK(bbs.valid == 0, "BS fc2>=fs/2 invalid");
+
     /* ── Report ────────────────────────────────────────────────────── */
 
     if (failures) {

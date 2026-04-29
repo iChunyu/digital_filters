@@ -84,6 +84,43 @@ int main(void)
 
     cheby2_destroy(&c2_3);
 
+    /* ── Chebyshev I BP 2nd order, fc1=2 Hz, fc2=5 Hz, fs=40 Hz ─────── */
+
+    cheby1_t c1bp;
+    cheby1_init(&c1bp, FILTER_BANDPASS, 2, 2.0f, 5.0f, 40.0f, 1.0f);
+    CHECK(c1bp.valid == 1, "cheby1 BP init");
+    CHECK(c1bp.sos->num_sections == 2, "cheby1 BP → 2 sections");
+
+    cheby1_reset(&c1bp, 1.0f);
+    y = cheby1_update(&c1bp, 1.0f);
+    CHECK(CLOSE(y, 0.0f, 1e-3f), "cheby1 BP blocks DC");
+
+    /* Centre frequency gain ≈ 1.0 */
+    float f0 = sqrtf(2.0f * 5.0f); /* ~3.16 Hz */
+    cheby1_reset(&c1bp, 0.0f);
+    float bp_max = 0.0f;
+    for (int n = 0; n < 800; n++) {
+        float t = (float)n / 40.0f;
+        float in_val = sinf(2.0f * (float)M_PI * f0 * t);
+        y = cheby1_update(&c1bp, in_val);
+        if (n > 400 && fabsf(y) > bp_max) bp_max = fabsf(y);
+    }
+    CHECK(CLOSE(bp_max, 1.0f, 0.15f), "cheby1 BP centre freq gain ~ 1");
+
+    cheby1_destroy(&c1bp);
+
+    /* ── Chebyshev I BS 2nd order ───────────────────────────────────── */
+
+    cheby1_t c1bs;
+    cheby1_init(&c1bs, FILTER_BANDSTOP, 2, 2.0f, 5.0f, 40.0f, 1.0f);
+    CHECK(c1bs.valid == 1, "cheby1 BS init");
+
+    cheby1_reset(&c1bs, 1.0f);
+    y = cheby1_update(&c1bs, 1.0f);
+    CHECK(CLOSE(y, 1.0f, 1e-4f), "cheby1 BS DC gain ~ 1");
+
+    cheby1_destroy(&c1bs);
+
     /* ── Chebyshev II HP 2nd order ─────────────────────────────────── */
 
     cheby2_t c2hp;
@@ -101,6 +138,33 @@ int main(void)
     CHECK(CLOSE(nyq_gain, 1.0f, 1e-2f), "cheby2 HP Nyquist gain ~ 1");
 
     cheby2_destroy(&c2hp);
+
+    /* ── Chebyshev II BP 3rd order (odd, nz=np-1, exercises padding) ── */
+    /* NB: even-order Chebyshev II has np=nz → no infinite prototype zeros,
+       so BP has non-zero DC gain.  Odd order is needed for DC rejection. */
+
+    cheby2_t c2bp3;
+    cheby2_init(&c2bp3, FILTER_BANDPASS, 3, 3.0f, 8.0f, 40.0f, 40.0f);
+    CHECK(c2bp3.valid == 1, "cheby2 BP 3rd-order init (odd)");
+    CHECK(c2bp3.sos->num_sections == 3, "cheby2 BP 3rd → 3 sections");
+
+    cheby2_reset(&c2bp3, 1.0f);
+    y = cheby2_update(&c2bp3, 1.0f);
+    CHECK(CLOSE(y, 0.0f, 1e-3f), "cheby2 BP 3rd-order blocks DC");
+
+    cheby2_destroy(&c2bp3);
+
+    /* ── Chebyshev II BS 2nd order ──────────────────────────────────── */
+
+    cheby2_t c2bs;
+    cheby2_init(&c2bs, FILTER_BANDSTOP, 2, 3.0f, 8.0f, 40.0f, 40.0f);
+    CHECK(c2bs.valid == 1, "cheby2 BS init");
+
+    cheby2_reset(&c2bs, 1.0f);
+    y = cheby2_update(&c2bs, 1.0f);
+    CHECK(CLOSE(y, 1.0f, 1e-4f), "cheby2 BS DC gain ~ 1");
+
+    cheby2_destroy(&c2bs);
 
     /* ── Invalid params → valid = 0 ────────────────────────────────── */
     cheby1_t ci1;

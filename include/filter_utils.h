@@ -3,6 +3,10 @@
 
 #include <stdint.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 typedef enum {
     FILTER_LOWPASS,
     FILTER_HIGHPASS,
@@ -69,21 +73,64 @@ void analog_hp_transform(complex_t *poles, uint8_t np,
 void bilinear_transform(complex_t *zp, uint8_t n, float fs);
 
 /**
+ * @brief Analog bandpass frequency transform.
+ *
+ * Substitutes s → (s² + ω₀²) / (ξ·s), doubling the order.
+ * Each pole and zero splits into two via the quadratic formula.
+ * The function appends (np_old − nz_old) zeros at the origin (0, 0) to
+ * account for infinite prototype zeros.
+ *
+ * @param[in,out] poles  Array with capacity ≥ 2·*np. Transformed in-place.
+ * @param[in,out] np     Input: number of prototype poles. Output: 2 × input.
+ * @param[in,out] zeros  Array with capacity ≥ *np + *nz. Transformed in-place.
+ * @param[in,out] nz     Input: number of prototype zeros. Output: *np_old + *nz_old.
+ * @param[in]     w0     Analog center frequency ω₀ = √(ω₁·ω₂) (rad/s).
+ * @param[in]     xi     Bandwidth ξ = ω₂ − ω₁ (rad/s).
+ */
+void analog_bp_transform(complex_t *poles, uint8_t *np,
+                         complex_t *zeros, uint8_t *nz,
+                         float w0, float xi);
+
+/**
+ * @brief Analog bandstop frequency transform.
+ *
+ * Substitutes s → ξ·s / (s² + ω₀²), doubling the order.
+ * The function appends 2·(np_old − nz_old) zeros at ±jω₀ to account
+ * for infinite prototype zeros.
+ *
+ * @param[in,out] poles  Array with capacity ≥ 2·*np. Transformed in-place.
+ * @param[in,out] np     Input: number of prototype poles. Output: 2 × input.
+ * @param[in,out] zeros  Array with capacity ≥ 2·*np. Transformed in-place.
+ * @param[in,out] nz     Input: number of prototype zeros. Output: 2 × *np_old.
+ * @param[in]     w0     Analog center frequency ω₀ = √(ω₁·ω₂) (rad/s).
+ * @param[in]     xi     Bandwidth ξ = ω₂ − ω₁ (rad/s).
+ */
+void analog_bs_transform(complex_t *poles, uint8_t *np,
+                         complex_t *zeros, uint8_t *nz,
+                         float w0, float xi);
+
+/**
  * @brief Convert z-domain pole/zero arrays to second-order section coefficients.
  *
  * Pairs poles with nearest zeros using the "most unfavorable pole first"
  * algorithm, produces biquad coefficients, and normalises each section for
- * unity gain at the reference frequency (DC for lowpass, Nyquist for highpass).
+ * unity gain at the frequency given by @p w0_norm.
  *
- * @param[in]  zeros  Array of n z-domain zeros.
- * @param[in]  poles  Array of n z-domain poles.
- * @param[in]  n      Number of poles (must equal number of zeros).
- * @param[out] sos    SOS matrix with ceil(n/2) rows, each [b0,b1,b2, 1,a1,a2].
- *                    Caller must allocate ceil(n/2) rows.
- * @param[in]  type   Filter type (for gain normalisation reference).
- * @return            Number of SOS sections = ceil(n/2).
+ * @param[in]  zeros    Array of n z-domain zeros.
+ * @param[in]  poles    Array of n z-domain poles.
+ * @param[in]  n        Number of poles (must equal number of zeros).
+ * @param[out] sos      SOS matrix with ceil(n/2) rows, each [b0,b1,b2, 1,a1,a2].
+ *                      Caller must allocate ceil(n/2) rows.
+ * @param[in]  w0_norm  Digital angular frequency (rad/sample) for unity-gain
+ *                      normalisation: 0 = DC (LP, BS), π = Nyquist (HP),
+ *                      2π·f₀/fs = centre frequency (BP).
+ * @return              Number of SOS sections = ceil(n/2).
  */
 uint8_t zpk2sos(const complex_t *zeros, const complex_t *poles, uint8_t n,
-                float (*sos)[6], filter_type_e type);
+                float (*sos)[6], float w0_norm);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* FILTER_UTILS_H_ */

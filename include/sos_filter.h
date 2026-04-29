@@ -4,6 +4,10 @@
 #include <stdint.h>
 #include "biquad_filter.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /**
  * @brief Cascade of second-order sections (biquads) forming a higher-order
  *        IIR filter.
@@ -93,5 +97,9 @@ float sos_filter_get_input(const sos_filter_t *filter);
  * @param[in]     equilibrium  Constant input value at steady-state.
  */
 void sos_filter_reset(sos_filter_t *filter, float equilibrium);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif  /* SOS_FILTER_H_ */

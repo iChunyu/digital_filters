@@ -1,9 +1,9 @@
 cmake_minimum_required(VERSION 3.14)
-project(biquad_filter VERSION 1.0.0 LANGUAGES C)
+project(digital_filters VERSION 1.0.0 LANGUAGES C)
 
 # ── Library ────────────────────────────────────────────────────────────────
 
-add_library(biquad_filter STATIC
+add_library(digital_filters STATIC
     src/biquad_filter.c
     src/sos_filter.c
     src/filter_utils.c
@@ -11,7 +11,7 @@ add_library(biquad_filter STATIC
     src/cheby_filter.c
 )
 
-target_include_directories(biquad_filter
+target_include_directories(digital_filters
     PUBLIC include
 )
 
@@ -30,7 +30,7 @@ endif()
 
 include(GNUInstallDirs)
 
-install(TARGETS biquad_filter
+install(TARGETS digital_filters
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )
 

@@ -33,54 +33,83 @@ void cheby1_init(cheby1_t *c, uint8_t type, uint8_t order,
 
     if (order == 0 || fc1 <= 0.0f || fc1 >= fs * 0.5f || ripple_db <= 0.0f)
         return;
-    if (type == FILTER_LOWPASS || type == FILTER_HIGHPASS)
-        (void)fc2;
+    if (type == FILTER_BANDPASS || type == FILTER_BANDSTOP) {
+        if (fc2 <= fc1 || fc2 >= fs * 0.5f) return;
+    }
+
+    /* Digital normalisation frequency (rad/sample). */
+    float w0_norm;
+    switch (type) {
+    case FILTER_LOWPASS:  w0_norm = 0.0f;            break;
+    case FILTER_HIGHPASS: w0_norm = (float)M_PI;     break;
+    case FILTER_BANDPASS: w0_norm = 2.0f * (float)M_PI
+                                  * sqrtf(fc1 * fc2) / fs; break;
+    case FILTER_BANDSTOP: w0_norm = 0.0f;            break;
+    default: return;
+    }
 
     float epsilon = sqrtf(powf(10.0f, ripple_db / 10.0f) - 1.0f);
-    float wc = 2.0f * (float)M_PI * prewarp(fc1, fs);
+    float wc1 = 2.0f * (float)M_PI * prewarp(fc1, fs);
+    float w0_analog, xi;
+    if (type == FILTER_BANDPASS || type == FILTER_BANDSTOP) {
+        float wc2 = 2.0f * (float)M_PI * prewarp(fc2, fs);
+        w0_analog = sqrtf(wc1 * wc2);
+        xi        = wc2 - wc1;
+    } else {
+        w0_analog = wc1;
+        xi        = 0.0f;
+    }
 
-    /* 1. Chebyshev I prototype — N poles, no zeros */
-    complex_t poles[32];
-    complex_t zeros[32];
+    /* Chebyshev I prototype — N poles, no zeros */
+    complex_t poles[64];
+    complex_t zeros[64];
     uint8_t np = order;
     uint8_t nz = 0;
 
     cheby1_prototype(poles, order, epsilon);
 
-    /* 2. Analog frequency transform */
+    /* Analog frequency transform */
     switch (type) {
     case FILTER_LOWPASS:
-        analog_lp_transform(poles, np, zeros, nz, wc);
+        analog_lp_transform(poles, np, zeros, nz, w0_analog);
         break;
     case FILTER_HIGHPASS:
-        analog_hp_transform(poles, np, zeros, nz, wc);
+        analog_hp_transform(poles, np, zeros, nz, w0_analog);
         for (uint8_t i = nz; i < np; i++) {
             zeros[i].re = 0.0f;
             zeros[i].im = 0.0f;
         }
         nz = np;
         break;
+    case FILTER_BANDPASS:
+        analog_bp_transform(poles, &np, zeros, &nz, w0_analog, xi);
+        break;
+    case FILTER_BANDSTOP:
+        analog_bs_transform(poles, &np, zeros, &nz, w0_analog, xi);
+        break;
     default:
         return;
     }
 
-    /* 3. Bilinear transform */
+    /* Bilinear transform */
     bilinear_transform(poles, np, fs);
     bilinear_transform(zeros, nz, fs);
 
-    /* 4. Zero-pad: prototype zeros at s=∞ → z = -1 */
-    for (uint8_t i = nz; i < np; i++) {
-        zeros[i].re = -1.0f;
-        zeros[i].im =  0.0f;
+    /* Zero-pad: prototype zeros at s=∞ → z = -1 (not for BS). */
+    if (type != FILTER_BANDSTOP) {
+        for (uint8_t i = nz; i < np; i++) {
+            zeros[i].re = -1.0f;
+            zeros[i].im =  0.0f;
+        }
+        nz = np;
     }
-    nz = np;
 
-    /* 5. ZPK → SOS → deploy */
+    /* ZPK → SOS → deploy */
     uint8_t ns = (np + 1) / 2;
     float (*sos)[6] = (float (*)[6])malloc((size_t)ns * 6 * sizeof(float));
     if (sos == NULL) return;
 
-    uint8_t n_sections = zpk2sos(zeros, poles, np, sos, type);
+    uint8_t n_sections = zpk2sos(zeros, poles, np, sos, w0_norm);
 
     c->sos = (sos_filter_t *)malloc(sizeof(sos_filter_t));
     if (c->sos == NULL) { free(sos); return; }
@@ -169,53 +198,82 @@ void cheby2_init(cheby2_t *c, uint8_t type, uint8_t order,
 
     if (order == 0 || fc1 <= 0.0f || fc1 >= fs * 0.5f || ripple_db <= 0.0f)
         return;
-    if (type == FILTER_LOWPASS || type == FILTER_HIGHPASS)
-        (void)fc2;
+    if (type == FILTER_BANDPASS || type == FILTER_BANDSTOP) {
+        if (fc2 <= fc1 || fc2 >= fs * 0.5f) return;
+    }
+
+    /* Digital normalisation frequency (rad/sample). */
+    float w0_norm;
+    switch (type) {
+    case FILTER_LOWPASS:  w0_norm = 0.0f;            break;
+    case FILTER_HIGHPASS: w0_norm = (float)M_PI;     break;
+    case FILTER_BANDPASS: w0_norm = 2.0f * (float)M_PI
+                                  * sqrtf(fc1 * fc2) / fs; break;
+    case FILTER_BANDSTOP: w0_norm = 0.0f;            break;
+    default: return;
+    }
 
     /* ε for Chebyshev II: stopband gain = ε / sqrt(1+ε²) = 10^(-dB/20) */
     float epsilon = 1.0f / sqrtf(powf(10.0f, ripple_db / 10.0f) - 1.0f);
-    float wc = 2.0f * (float)M_PI * prewarp(fc1, fs);
+    float wc1 = 2.0f * (float)M_PI * prewarp(fc1, fs);
+    float w0_analog, xi;
+    if (type == FILTER_BANDPASS || type == FILTER_BANDSTOP) {
+        float wc2 = 2.0f * (float)M_PI * prewarp(fc2, fs);
+        w0_analog = sqrtf(wc1 * wc2);
+        xi        = wc2 - wc1;
+    } else {
+        w0_analog = wc1;
+        xi        = 0.0f;
+    }
 
-    /* 1. Chebyshev II prototype — N poles, N (even) or N-1 (odd) finite zeros */
-    complex_t poles[32];
-    complex_t zeros[32];
+    /* Chebyshev II prototype — N poles, N (even) or N-1 (odd) finite zeros */
+    complex_t poles[64];
+    complex_t zeros[64];
     uint8_t np = order;
     uint8_t nz = cheby2_prototype(poles, zeros, order, epsilon);
 
-    /* 2. Analog frequency transform */
+    /* Analog frequency transform */
     switch (type) {
     case FILTER_LOWPASS:
-        analog_lp_transform(poles, np, zeros, nz, wc);
+        analog_lp_transform(poles, np, zeros, nz, w0_analog);
         break;
     case FILTER_HIGHPASS:
-        analog_hp_transform(poles, np, zeros, nz, wc);
+        analog_hp_transform(poles, np, zeros, nz, w0_analog);
         for (uint8_t i = nz; i < np; i++) {
             zeros[i].re = 0.0f;
             zeros[i].im = 0.0f;
         }
         nz = np;
         break;
+    case FILTER_BANDPASS:
+        analog_bp_transform(poles, &np, zeros, &nz, w0_analog, xi);
+        break;
+    case FILTER_BANDSTOP:
+        analog_bs_transform(poles, &np, zeros, &nz, w0_analog, xi);
+        break;
     default:
         return;
     }
 
-    /* 3. Bilinear transform */
+    /* Bilinear transform */
     bilinear_transform(poles, np, fs);
     bilinear_transform(zeros, nz, fs);
 
-    /* 4. Zero-pad: prototype zeros at s=∞ → z = -1 */
-    for (uint8_t i = nz; i < np; i++) {
-        zeros[i].re = -1.0f;
-        zeros[i].im =  0.0f;
+    /* Zero-pad: prototype zeros at s=∞ → z = -1 (not for BS). */
+    if (type != FILTER_BANDSTOP) {
+        for (uint8_t i = nz; i < np; i++) {
+            zeros[i].re = -1.0f;
+            zeros[i].im =  0.0f;
+        }
+        nz = np;
     }
-    nz = np;
 
-    /* 5. ZPK → SOS → deploy */
+    /* ZPK → SOS → deploy */
     uint8_t ns = (np + 1) / 2;
     float (*sos)[6] = (float (*)[6])malloc((size_t)ns * 6 * sizeof(float));
     if (sos == NULL) return;
 
-    uint8_t n_sections = zpk2sos(zeros, poles, np, sos, type);
+    uint8_t n_sections = zpk2sos(zeros, poles, np, sos, w0_norm);
 
     c->sos = (sos_filter_t *)malloc(sizeof(sos_filter_t));
     if (c->sos == NULL) { free(sos); return; }

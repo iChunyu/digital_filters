@@ -24,16 +24,36 @@ void butter_init(butter_t *b, uint8_t type, uint8_t order,
 
     /* Validate */
     if (order == 0 || fc1 <= 0.0f || fc1 >= fs * 0.5f) return;
-    if (type == FILTER_LOWPASS || type == FILTER_HIGHPASS) {
-        (void)fc2;
+    if (type == FILTER_BANDPASS || type == FILTER_BANDSTOP) {
+        if (fc2 <= fc1 || fc2 >= fs * 0.5f) return;
     }
 
-    /* 1. Pre-warp digital cutoff → analog radian frequency */
-    float wc = 2.0f * (float)M_PI * prewarp(fc1, fs);
+    /* Digital normalisation frequency (rad/sample). */
+    float w0_norm;
+    switch (type) {
+    case FILTER_LOWPASS:  w0_norm = 0.0f;            break;
+    case FILTER_HIGHPASS: w0_norm = (float)M_PI;     break;
+    case FILTER_BANDPASS: w0_norm = 2.0f * (float)M_PI
+                                  * sqrtf(fc1 * fc2) / fs; break;
+    case FILTER_BANDSTOP: w0_norm = 0.0f;            break;
+    default: return;
+    }
+
+    /* 1. Pre-warp digital cutoff(s) → analog radian frequency */
+    float wc1 = 2.0f * (float)M_PI * prewarp(fc1, fs);
+    float w0_analog, xi;
+    if (type == FILTER_BANDPASS || type == FILTER_BANDSTOP) {
+        float wc2 = 2.0f * (float)M_PI * prewarp(fc2, fs);
+        w0_analog = sqrtf(wc1 * wc2);
+        xi        = wc2 - wc1;
+    } else {
+        w0_analog = wc1;
+        xi        = 0.0f;
+    }
 
     /* 2. Butterworth prototype — N poles, no zeros */
-    complex_t poles[32];
-    complex_t zeros[32];
+    complex_t poles[64];
+    complex_t zeros[64];
     uint8_t np = order;
     uint8_t nz = 0;
 
@@ -42,38 +62,46 @@ void butter_init(butter_t *b, uint8_t type, uint8_t order,
     /* 3. Analog frequency transform */
     switch (type) {
     case FILTER_LOWPASS:
-        analog_lp_transform(poles, np, zeros, nz, wc);
+        analog_lp_transform(poles, np, zeros, nz, w0_analog);
         break;
     case FILTER_HIGHPASS:
-        analog_hp_transform(poles, np, zeros, nz, wc);
-        /* Add np - nz zeros at s = 0 (maps to z = +1 after bilinear). */
+        analog_hp_transform(poles, np, zeros, nz, w0_analog);
         for (uint8_t i = nz; i < np; i++) {
             zeros[i].re = 0.0f;
             zeros[i].im = 0.0f;
         }
         nz = np;
         break;
+    case FILTER_BANDPASS:
+        analog_bp_transform(poles, &np, zeros, &nz, w0_analog, xi);
+        break;
+    case FILTER_BANDSTOP:
+        analog_bs_transform(poles, &np, zeros, &nz, w0_analog, xi);
+        break;
     default:
-        return; /* BP / BS not yet implemented */
+        return;
     }
 
     /* 4. Bilinear transform: s → z */
     bilinear_transform(poles, np, fs);
     bilinear_transform(zeros, nz, fs);
 
-    /* 5. Add zeros at z = -1 for each excess pole (prototype zeros at s = ∞). */
-    for (uint8_t i = nz; i < np; i++) {
-        zeros[i].re = -1.0f;
-        zeros[i].im =  0.0f;
+    /* 5. Add zeros at z = -1 for excess poles (prototype zeros at s = ∞).
+          For BS, all zeros are already finite (none at ∞). */
+    if (type != FILTER_BANDSTOP) {
+        for (uint8_t i = nz; i < np; i++) {
+            zeros[i].re = -1.0f;
+            zeros[i].im =  0.0f;
+        }
+        nz = np;
     }
-    nz = np;
 
     /* 6. Pair poles and zeros → SOS coefficients. */
     uint8_t ns = (np + 1) / 2; /* ceil(N/2) sections */
     float (*sos)[6] = (float (*)[6])malloc((size_t)ns * 6 * sizeof(float));
     if (sos == NULL) return;
 
-    uint8_t n_sections = zpk2sos(zeros, poles, np, sos, type);
+    uint8_t n_sections = zpk2sos(zeros, poles, np, sos, w0_norm);
 
     /* 7. Deploy to sos_filter_t. */
     b->sos = (sos_filter_t *)malloc(sizeof(sos_filter_t));

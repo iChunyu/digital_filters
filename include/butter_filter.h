@@ -5,6 +5,10 @@
 #include "sos_filter.h"
 #include "filter_utils.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /**
  * @brief Butterworth filter object.
  *
@@ -75,5 +79,9 @@ float butter_update(butter_t *b, float input);
  * @param[in]     equilibrium  Constant input value at steady-state.
  */
 float butter_reset(butter_t *b, float equilibrium);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* BUTTER_FILTER_H_ */

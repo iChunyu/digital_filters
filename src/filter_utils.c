@@ -54,6 +54,183 @@ void analog_hp_transform(complex_t *poles, uint8_t np,
 
 /* ------------------------------------------------------------------ */
 
+/* Complex square root: sqrt(re + j·im).
+   Returns the principal branch (non-negative real part). */
+static complex_t c_sqrt(float re, float im)
+{
+    complex_t r;
+    float mag = sqrtf(re * re + im * im);
+    if (mag < 1e-20f) {
+        r.re = 0.0f;
+        r.im = 0.0f;
+        return r;
+    }
+    /* Handle negative-real case to avoid cancellation in (mag + re)/2. */
+    if (re < 0.0f && fabsf(im) < 1e-12f * fabsf(re)) {
+        r.re = 0.0f;
+        r.im = sqrtf(-re);
+        if (im < 0.0f) r.im = -r.im;
+        return r;
+    }
+    float sr = sqrtf(0.5f * (mag + re));
+    float si = sqrtf(0.5f * (mag - re));
+    r.re = sr;
+    r.im = (im >= 0.0f) ? si : -si;
+    return r;
+}
+
+/* ------------------------------------------------------------------ */
+
+void analog_bp_transform(complex_t *poles, uint8_t *np,
+                         complex_t *zeros, uint8_t *nz,
+                         float w0, float xi)
+{
+    uint8_t np_old = *np;
+    uint8_t nz_old = *nz;
+    float w0_sq = w0 * w0;
+
+    /* Transform poles backward to avoid clobbering. */
+    for (int i = np_old - 1; i >= 0; i--) {
+        float pr = poles[i].re;
+        float pi = poles[i].im;
+
+        /* disc = (p·xi)² − 4·w0² */
+        float a = xi * pr;
+        float b = xi * pi;
+        float disc_re = a * a - b * b - 4.0f * w0_sq;
+        float disc_im = 2.0f * a * b;
+
+        complex_t sd = c_sqrt(disc_re, disc_im);
+
+        /* p1 = (p·xi + sqrt(disc)) / 2,  p2 = (p·xi − sqrt(disc)) / 2 */
+        poles[2 * i].re     = 0.5f * (a + sd.re);
+        poles[2 * i].im     = 0.5f * (b + sd.im);
+        poles[2 * i + 1].re = 0.5f * (a - sd.re);
+        poles[2 * i + 1].im = 0.5f * (b - sd.im);
+    }
+    *np = 2 * np_old;
+
+    /* Transform finite zeros with the same formula. */
+    for (int i = nz_old - 1; i >= 0; i--) {
+        float zr = zeros[i].re;
+        float zi = zeros[i].im;
+
+        float a = xi * zr;
+        float b = xi * zi;
+        float disc_re = a * a - b * b - 4.0f * w0_sq;
+        float disc_im = 2.0f * a * b;
+
+        complex_t sd = c_sqrt(disc_re, disc_im);
+
+        zeros[2 * i].re     = 0.5f * (a + sd.re);
+        zeros[2 * i].im     = 0.5f * (b + sd.im);
+        zeros[2 * i + 1].re = 0.5f * (a - sd.re);
+        zeros[2 * i + 1].im = 0.5f * (b - sd.im);
+    }
+
+    /* Append (np_old − nz_old) zeros at the origin for infinite prototype zeros.
+       These map to z = +1 after bilinear transform. */
+    for (uint8_t i = 0; i < np_old - nz_old; i++) {
+        zeros[2 * nz_old + i].re = 0.0f;
+        zeros[2 * nz_old + i].im = 0.0f;
+    }
+    *nz = nz_old + np_old;  /* = 2·nz_old + (np_old − nz_old) */
+}
+
+/* ------------------------------------------------------------------ */
+
+void analog_bs_transform(complex_t *poles, uint8_t *np,
+                         complex_t *zeros, uint8_t *nz,
+                         float w0, float xi)
+{
+    uint8_t np_old = *np;
+    uint8_t nz_old = *nz;
+    float xi_sq = xi * xi;
+    float w0_sq = w0 * w0;
+
+    /* Transform poles backward.  p_k = (ξ ± √(ξ² − 4·p²·ω₀²)) / (2·p) */
+    for (int i = np_old - 1; i >= 0; i--) {
+        float pr = poles[i].re;
+        float pi = poles[i].im;
+        float mag2 = pr * pr + pi * pi;
+        if (mag2 < 1e-20f) {
+            /* Degenerate: leave as-is (should not happen for stable prototypes). */
+            poles[2 * i].re     = poles[i].re;
+            poles[2 * i].im     = poles[i].im;
+            poles[2 * i + 1].re = poles[i].re;
+            poles[2 * i + 1].im = poles[i].im;
+            continue;
+        }
+
+        /* disc = ξ² − 4·p²·ω₀² */
+        float p2_re = pr * pr - pi * pi;
+        float p2_im = 2.0f * pr * pi;
+        float disc_re = xi_sq - 4.0f * w0_sq * p2_re;
+        float disc_im =        - 4.0f * w0_sq * p2_im;
+
+        complex_t sd = c_sqrt(disc_re, disc_im);
+
+        /* p1 = (ξ + √disc) / (2·p),  p2 = (ξ − √disc) / (2·p) */
+        /* Division by complex p:  (num) / p = num · conj(p) / |p|² */
+        float inv = 0.5f / mag2;
+
+        float n1_re = xi + sd.re;
+        float n1_im =      sd.im;
+        poles[2 * i].re     = inv * (n1_re * pr + n1_im * pi);
+        poles[2 * i].im     = inv * (n1_im * pr - n1_re * pi);
+
+        float n2_re = xi - sd.re;
+        float n2_im =     -sd.im;
+        poles[2 * i + 1].re = inv * (n2_re * pr + n2_im * pi);
+        poles[2 * i + 1].im = inv * (n2_im * pr - n2_re * pi);
+    }
+    *np = 2 * np_old;
+
+    /* Transform finite zeros with the same formula. */
+    for (int i = nz_old - 1; i >= 0; i--) {
+        float zr = zeros[i].re;
+        float zi = zeros[i].im;
+        float mag2 = zr * zr + zi * zi;
+        if (mag2 < 1e-20f) {
+            zeros[2 * i].re     = zeros[i].re;
+            zeros[2 * i].im     = zeros[i].im;
+            zeros[2 * i + 1].re = zeros[i].re;
+            zeros[2 * i + 1].im = zeros[i].im;
+            continue;
+        }
+
+        float z2_re = zr * zr - zi * zi;
+        float z2_im = 2.0f * zr * zi;
+        float disc_re = xi_sq - 4.0f * w0_sq * z2_re;
+        float disc_im =        - 4.0f * w0_sq * z2_im;
+
+        complex_t sd = c_sqrt(disc_re, disc_im);
+
+        float inv = 0.5f / mag2;
+
+        float n1_re = xi + sd.re;
+        float n1_im =      sd.im;
+        zeros[2 * i].re     = inv * (n1_re * zr + n1_im * zi);
+        zeros[2 * i].im     = inv * (n1_im * zr - n1_re * zi);
+
+        float n2_re = xi - sd.re;
+        float n2_im =     -sd.im;
+        zeros[2 * i + 1].re = inv * (n2_re * zr + n2_im * zi);
+        zeros[2 * i + 1].im = inv * (n2_im * zr - n2_re * zi);
+    }
+
+    /* Append 2·(np_old − nz_old) zeros at ±jω₀ for infinite prototype zeros. */
+    for (uint8_t i = 0; i < np_old - nz_old; i++) {
+        zeros[2 * nz_old + 2 * i].re     =  0.0f;
+        zeros[2 * nz_old + 2 * i].im     =  w0;
+        zeros[2 * nz_old + 2 * i + 1].re =  0.0f;
+        zeros[2 * nz_old + 2 * i + 1].im = -w0;
+    }
+    *nz = 2 * np_old;
+}
+
+/* ------------------------------------------------------------------ */
+
 void bilinear_transform(complex_t *zp, uint8_t n, float fs)
 {
     float K = 2.0f * fs;
@@ -118,19 +295,34 @@ static void make_biquad(const complex_t *p1, const complex_t *p2,
     b[2] = z1->re * z2->re - z1->im * z2->im;
 }
 
-/* Normalise b coefs for unity gain at reference frequency. */
-static void norm_gain(float *b, const float *a, filter_type_e type)
+/* Normalise b coefs for unity gain at digital frequency w0 (rad/sample).
+   w0 = 0 → DC (z=1), w0 = π → Nyquist (z=-1), otherwise general z=e^{j·w0}. */
+static void norm_gain(float *b, const float *a, float w0)
 {
     float gain_num, gain_den;
 
-    if (type == FILTER_HIGHPASS) {
-        /* Unity gain at Nyquist (z = -1) */
+    if (fabsf(w0) < 1e-12f) {
+        /* DC (z = 1) — LP, BS */
+        gain_num = b[0] + b[1] + b[2];
+        gain_den = 1.0f + a[0] + a[1];
+    } else if (fabsf(w0 - (float)M_PI) < 1e-12f) {
+        /* Nyquist (z = -1) — HP */
         gain_num = b[0] - b[1] + b[2];
         gain_den = 1.0f - a[0] + a[1];
     } else {
-        /* Unity gain at DC (z = 1) — default for LP, BP, BS */
-        gain_num = b[0] + b[1] + b[2];
-        gain_den = 1.0f + a[0] + a[1];
+        /* General frequency z = e^{j·w0} — BP centre frequency */
+        float c1 = cosf(w0);
+        float s1 = sinf(w0);
+        float c2 = cosf(2.0f * w0);
+        float s2 = sinf(2.0f * w0);
+
+        float num_re = b[0] + b[1] * c1 + b[2] * c2;
+        float num_im =      - b[1] * s1 - b[2] * s2;
+        float den_re = 1.0f + a[0] * c1 + a[1] * c2;
+        float den_im =      - a[0] * s1 - a[1] * s2;
+
+        gain_num = sqrtf(num_re * num_re + num_im * num_im);
+        gain_den = sqrtf(den_re * den_re + den_im * den_im);
     }
 
     if (fabsf(gain_num) < 1e-12f || fabsf(gain_den) < 1e-12f) {
@@ -210,14 +402,14 @@ static void claim_conjugate(const complex_t *arr, uint8_t *used, uint8_t n,
 }
 
 uint8_t zpk2sos(const complex_t *zeros, const complex_t *poles, uint8_t n,
-                float (*sos)[6], filter_type_e type)
+                float (*sos)[6], float w0)
 {
     if (n == 0) return 0;
 
     /* Working copies so we can mutate ownership via used[] flags. */
-    uint8_t used_p[32];
-    uint8_t used_z[32];
-    complex_t wp[32], wz[32];
+    uint8_t used_p[64];
+    uint8_t used_z[64];
+    complex_t wp[64], wz[64];
 
     memcpy(wp, poles, n * sizeof(complex_t));
     memcpy(wz, zeros, n * sizeof(complex_t));
@@ -255,7 +447,7 @@ uint8_t zpk2sos(const complex_t *zeros, const complex_t *poles, uint8_t n,
                 float b[3] = {1.0f, -z1.re, 0.0f};
                 float a[2] = {-p1.re, 0.0f};
 
-                norm_gain(b, a, type);
+                norm_gain(b, a, w0);
 
                 sos[section][0] = b[0];
                 sos[section][1] = b[1];
@@ -318,7 +510,7 @@ uint8_t zpk2sos(const complex_t *zeros, const complex_t *poles, uint8_t n,
         float b[3], a[2];
         make_biquad(&p1, &p2, &z1, &z2, b, a);
 
-        norm_gain(b, a, type);
+        norm_gain(b, a, w0);
 
         sos[section][0] = b[0];
         sos[section][1] = b[1];

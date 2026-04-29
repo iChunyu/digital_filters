@@ -5,6 +5,10 @@
 #include "sos_filter.h"
 #include "filter_utils.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* ================================================================== */
 
 /**
@@ -56,5 +60,9 @@ void cheby2_init(cheby2_t *c, uint8_t type, uint8_t order,
 void cheby2_destroy(cheby2_t *c);
 float cheby2_update(cheby2_t *c, float input);
 float cheby2_reset(cheby2_t *c, float equilibrium);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* CHEBY_FILTER_H_ */
