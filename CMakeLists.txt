@@ -5,6 +5,7 @@ project(biquad_filter VERSION 1.0.0 LANGUAGES C)
 
 add_library(biquad_filter STATIC
     src/biquad_filter.c
+    src/sos_filter.c
 )
 
 target_include_directories(biquad_filter
