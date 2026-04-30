@@ -9,6 +9,8 @@ add_library(digital_filters STATIC
     src/filter_utils.c
     src/butter_filter.c
     src/cheby_filter.c
+    src/static_butter_filter.c
+    src/static_cheby_filter.c
 )
 
 target_include_directories(digital_filters
