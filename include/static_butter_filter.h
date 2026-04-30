@@ -20,18 +20,6 @@ extern "C" {
     float    fc2;          /* upper band-edge in Hz (0 for LP/HP)         */ \
     float    fs;           /* sampling frequency in Hz                    */
 
-/**
- * @brief Base type for unified static_butter_update() / static_butter_reset().
- *
- * Cast any butter_lp_Nth_t*, butter_hp_Nth_t*, butter_bp_Nth_t*, or
- * butter_bs_Nth_t* pointer to static_butter_t* — the common prefix guarantees
- * identical memory layout for the fields above.
- */
-typedef struct {
-    STATIC_BUTTER_FIELDS
-    biquad_filter_t sections[1]; /* placeholder; real count = num_sections */
-} static_butter_t;
-
 /* ── Order tables (X-macro) ───────────────────────────────────────────── */
 /* order, sections_for_lp_hp, ordinal_label */
 
@@ -109,29 +97,56 @@ FOR_EACH_STATIC_BUTTER_BP_ORDER
 FOR_EACH_STATIC_BUTTER_BP_ORDER
 #undef X
 
-/* ── Unified update / reset ───────────────────────────────────────────── */
+/* ── Per-order update / reset declarations ────────────────────────────── */
 
 /**
  * @brief Process one sample through a statically-allocated Butterworth filter.
  *
- * Cast any butter_{lp,hp,bp,bs}_Nth_t* to static_butter_t* before calling.
- * If !valid, returns @p input unchanged (passthrough).
+ * Functions follow the naming convention butter_{lp,hp,bp,bs}_{1st..8th}_update.
+ * If the filter is invalid (!valid), returns @p input unchanged (passthrough).
  *
- * @param[in,out] f      Pointer (static_butter_t*) to the filter.
+ * @param[in,out] f      Pointer to the filter struct.
  * @param[in]     input  Current input sample.
  * @return               Filtered output.
  */
-float static_butter_update(static_butter_t *f, float input);
 
 /**
  * @brief Reset a statically-allocated Butterworth filter to steady-state.
  *
- * No-op if !valid.
+ * Functions follow the naming convention butter_{lp,hp,bp,bs}_{1st..8th}_reset.
+ * No-op if the filter is invalid (!valid).
  *
- * @param[in,out] f           Pointer (static_butter_t*) to the filter.
+ * @param[in,out] f           Pointer to the filter struct.
  * @param[in]     equilibrium  Constant input value at steady-state.
  */
-void static_butter_reset(static_butter_t *f, float equilibrium);
+
+/* Lowpass */
+#define X(order, ns, ol) \
+    float butter_lp_##ol##_update(butter_lp_##ol##_t *f, float input); \
+    void  butter_lp_##ol##_reset(butter_lp_##ol##_t *f, float equilibrium);
+FOR_EACH_STATIC_BUTTER_LP_ORDER
+#undef X
+
+/* Highpass */
+#define X(order, ns, ol) \
+    float butter_hp_##ol##_update(butter_hp_##ol##_t *f, float input); \
+    void  butter_hp_##ol##_reset(butter_hp_##ol##_t *f, float equilibrium);
+FOR_EACH_STATIC_BUTTER_LP_ORDER
+#undef X
+
+/* Bandpass */
+#define X(order, ns, ol) \
+    float butter_bp_##ol##_update(butter_bp_##ol##_t *f, float input); \
+    void  butter_bp_##ol##_reset(butter_bp_##ol##_t *f, float equilibrium);
+FOR_EACH_STATIC_BUTTER_BP_ORDER
+#undef X
+
+/* Bandstop */
+#define X(order, ns, ol) \
+    float butter_bs_##ol##_update(butter_bs_##ol##_t *f, float input); \
+    void  butter_bs_##ol##_reset(butter_bs_##ol##_t *f, float equilibrium);
+FOR_EACH_STATIC_BUTTER_BP_ORDER
+#undef X
 
 #ifdef __cplusplus
 }

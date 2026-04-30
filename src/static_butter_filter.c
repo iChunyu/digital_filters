@@ -2,6 +2,12 @@
 #include <math.h>
 #include <string.h>
 
+/* Base type for internal casting — prefix matches all static Butterworth structs. */
+typedef struct {
+    STATIC_BUTTER_FIELDS
+    biquad_filter_t sections[1];
+} static_butter_t;
+
 /* ================================================================== */
 /*  Pre-computed Butterworth prototype poles (orders 1–8)              */
 /* ================================================================== */
@@ -296,10 +302,10 @@ FOR_EACH_STATIC_BUTTER_BP_ORDER
 #undef X
 
 /* ================================================================== */
-/*  Unified update / reset                                             */
+/*  Internal helpers                                                    */
 /* ================================================================== */
 
-float static_butter_update(static_butter_t *f, float input)
+static float static_butter_update(static_butter_t *f, float input)
 {
     if (!f->valid) return input;
 
@@ -310,7 +316,7 @@ float static_butter_update(static_butter_t *f, float input)
     return x;
 }
 
-void static_butter_reset(static_butter_t *f, float equilibrium)
+static void static_butter_reset(static_butter_t *f, float equilibrium)
 {
     if (!f->valid) return;
 
@@ -320,3 +326,51 @@ void static_butter_reset(static_butter_t *f, float equilibrium)
         x = biquad_filter_get_output(&f->sections[i]);
     }
 }
+
+/* ================================================================== */
+/*  Per-order update / reset (macro-generated)                          */
+/* ================================================================== */
+
+/* Lowpass */
+#define X(order, ns, ol) \
+    float butter_lp_##ol##_update(butter_lp_##ol##_t *f, float input) { \
+        return static_butter_update((static_butter_t *)f, input); \
+    } \
+    void butter_lp_##ol##_reset(butter_lp_##ol##_t *f, float equilibrium) { \
+        static_butter_reset((static_butter_t *)f, equilibrium); \
+    }
+FOR_EACH_STATIC_BUTTER_LP_ORDER
+#undef X
+
+/* Highpass */
+#define X(order, ns, ol) \
+    float butter_hp_##ol##_update(butter_hp_##ol##_t *f, float input) { \
+        return static_butter_update((static_butter_t *)f, input); \
+    } \
+    void butter_hp_##ol##_reset(butter_hp_##ol##_t *f, float equilibrium) { \
+        static_butter_reset((static_butter_t *)f, equilibrium); \
+    }
+FOR_EACH_STATIC_BUTTER_LP_ORDER
+#undef X
+
+/* Bandpass */
+#define X(order, ns, ol) \
+    float butter_bp_##ol##_update(butter_bp_##ol##_t *f, float input) { \
+        return static_butter_update((static_butter_t *)f, input); \
+    } \
+    void butter_bp_##ol##_reset(butter_bp_##ol##_t *f, float equilibrium) { \
+        static_butter_reset((static_butter_t *)f, equilibrium); \
+    }
+FOR_EACH_STATIC_BUTTER_BP_ORDER
+#undef X
+
+/* Bandstop */
+#define X(order, ns, ol) \
+    float butter_bs_##ol##_update(butter_bs_##ol##_t *f, float input) { \
+        return static_butter_update((static_butter_t *)f, input); \
+    } \
+    void butter_bs_##ol##_reset(butter_bs_##ol##_t *f, float equilibrium) { \
+        static_butter_reset((static_butter_t *)f, equilibrium); \
+    }
+FOR_EACH_STATIC_BUTTER_BP_ORDER
+#undef X

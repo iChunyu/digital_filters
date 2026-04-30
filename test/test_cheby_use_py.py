@@ -32,34 +32,26 @@ FILTER_CONFIGS = [
     ("Chebyshev II BS", signal.cheby2, "bandstop", "cheby2_bs", "static_cheby2_bs", 40.0, FC1_BP, FC2_BP),
 ]
 
-CSV_FILE = os.path.join(os.path.dirname(__file__), "test_cheby_data.csv")
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+CSV_FILE = os.path.join(SCRIPT_DIR, "test_cheby_data.csv")
+BIN_FILE = os.path.join(SCRIPT_DIR, "test_cheby_with_py")
 
 
-def make_pickable_legend(fig):
-    """Wire up pick events so clicking a legend entry toggles the line."""
-    for ax in fig.axes:
-        leg = ax.get_legend()
-        if leg is None:
-            continue
-        lined = {}
-        for legline, origline in zip(leg.get_lines(), ax.get_lines()):
-            legline.set_picker(True)
-            lined[legline] = origline
-
-        def on_pick(event):
-            legline = event.artist
-            origline = lined.get(legline)
-            if origline is None:
-                return
-            visible = not origline.get_visible()
-            origline.set_visible(visible)
-            legline.set_alpha(1.0 if visible else 0.2)
-            fig.canvas.draw()
-
-        fig.canvas.mpl_connect("pick_event", on_pick)
+def ensure_csv():
+    """Generate CSV via C binary if it doesn't exist yet."""
+    if os.path.isfile(CSV_FILE):
+        return
+    if not os.path.isfile(BIN_FILE):
+        raise FileNotFoundError(
+            f"CSV not found and binary missing: {BIN_FILE}\n"
+            "Build first, then run from build/test/ directory")
+    import subprocess
+    print(f"Generating {CSV_FILE} …")
+    subprocess.run([BIN_FILE], check=True, cwd=SCRIPT_DIR)
 
 
 def main():
+    ensure_csv()
     data = np.genfromtxt(CSV_FILE, delimiter=",", names=True)
     t = data["timestamp"]
     x = data["input"]
@@ -87,14 +79,34 @@ def main():
         ax1.legend(loc="best")
         ax1.grid(True, alpha=0.3)
 
-        ax2.plot(t, c_dyn - scipy_out, label=f"{family}_t − scipy", linestyle="--")
-        ax2.plot(t, c_sta - scipy_out, label=f"static_{family}_7th_t − scipy", linestyle=":")
+        # Inset: last 100 points on amplitude
+        n_zoom = min(100, len(t))
+        ax1_ins = ax1.inset_axes([0.55, 0.55, 0.40, 0.40])
+        ax1_ins.plot(t[-n_zoom:], x[-n_zoom:], color="gray", alpha=0.5)
+        ax1_ins.plot(t[-n_zoom:], c_dyn[-n_zoom:], linestyle="--")
+        ax1_ins.plot(t[-n_zoom:], c_sta[-n_zoom:], linestyle=":")
+        ax1_ins.plot(t[-n_zoom:], scipy_out[-n_zoom:], linestyle="-.")
+        ax1_ins.set_title(f"Last {n_zoom} points", fontsize=7)
+        ax1_ins.tick_params(labelsize=6)
+        ax1_ins.grid(True, alpha=0.3)
+
+        err_dyn = c_dyn - scipy_out
+        err_sta = c_sta - scipy_out
+        ax2.plot(t, err_dyn, label=f"{family}_t − scipy", linestyle="--")
+        ax2.plot(t, err_sta, label=f"static_{family}_7th_t − scipy", linestyle=":")
         ax2.set_xlabel("Time (s)")
         ax2.set_ylabel("Error")
         ax2.legend(loc="best")
         ax2.grid(True, alpha=0.3)
 
-        make_pickable_legend(fig)
+        # Inset: last 100 error points
+        ax2_ins = ax2.inset_axes([0.55, 0.55, 0.40, 0.40])
+        ax2_ins.plot(t[-n_zoom:], err_dyn[-n_zoom:], linestyle="--")
+        ax2_ins.plot(t[-n_zoom:], err_sta[-n_zoom:], linestyle=":")
+        ax2_ins.set_title(f"Last {n_zoom} points", fontsize=7)
+        ax2_ins.tick_params(labelsize=6)
+        ax2_ins.grid(True, alpha=0.3)
+
         plt.tight_layout()
 
     if plt.get_backend() != "agg":

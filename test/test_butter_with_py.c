@@ -43,10 +43,10 @@ int main(void)
 
     butter_reset(&b_lp, first);  butter_reset(&b_hp, first);
     butter_reset(&b_bp, first);  butter_reset(&b_bs, first);
-    static_butter_reset((static_butter_t *)&sb_lp, first);
-    static_butter_reset((static_butter_t *)&sb_hp, first);
-    static_butter_reset((static_butter_t *)&sb_bp, first);
-    static_butter_reset((static_butter_t *)&sb_bs, first);
+    butter_lp_7th_reset(&sb_lp, first);
+    butter_hp_7th_reset(&sb_hp, first);
+    butter_bp_7th_reset(&sb_bp, first);
+    butter_bs_7th_reset(&sb_bs, first);
 
     /* ── CSV header ───────────────────────────────────────────────────── */
     fprintf(f, "timestamp,input,"
@@ -65,10 +65,10 @@ int main(void)
                 butter_update(&b_bp, x), butter_update(&b_bs, x));
 
         fprintf(f, ",%.6f,%.6f,%.6f,%.6f",
-                static_butter_update((static_butter_t *)&sb_lp, x),
-                static_butter_update((static_butter_t *)&sb_hp, x),
-                static_butter_update((static_butter_t *)&sb_bp, x),
-                static_butter_update((static_butter_t *)&sb_bs, x));
+                butter_lp_7th_update(&sb_lp, x),
+                butter_hp_7th_update(&sb_hp, x),
+                butter_bp_7th_update(&sb_bp, x),
+                butter_bs_7th_update(&sb_bs, x));
 
         fprintf(f, "\n");
     }

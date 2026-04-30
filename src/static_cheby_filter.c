@@ -2,6 +2,12 @@
 #include <math.h>
 #include <string.h>
 
+/* Base type for internal casting — prefix matches all static Chebyshev structs. */
+typedef struct {
+    STATIC_CHEBY_FIELDS
+    biquad_filter_t sections[1];
+} static_cheby_t;
+
 /* ================================================================== */
 /*  Chebyshev prototypes (runtime computation — depend on ripple)      */
 /* ================================================================== */
@@ -467,10 +473,10 @@ FOR_EACH_STATIC_CHEBY_BP_ORDER
 #undef X
 
 /* ================================================================== */
-/*  Unified update / reset                                             */
+/*  Internal helpers                                                    */
 /* ================================================================== */
 
-float static_cheby_update(static_cheby_t *f, float input)
+static float static_cheby_update(static_cheby_t *f, float input)
 {
     if (!f->valid) return input;
 
@@ -481,7 +487,7 @@ float static_cheby_update(static_cheby_t *f, float input)
     return x;
 }
 
-void static_cheby_reset(static_cheby_t *f, float equilibrium)
+static void static_cheby_reset(static_cheby_t *f, float equilibrium)
 {
     if (!f->valid) return;
 
@@ -491,3 +497,95 @@ void static_cheby_reset(static_cheby_t *f, float equilibrium)
         x = biquad_filter_get_output(&f->sections[i]);
     }
 }
+
+/* ================================================================== */
+/*  Per-order update / reset (macro-generated)                          */
+/* ================================================================== */
+
+/* Chebyshev I — lowpass */
+#define X(order, ns, ol) \
+    float cheby1_lp_##ol##_update(cheby1_lp_##ol##_t *f, float input) { \
+        return static_cheby_update((static_cheby_t *)f, input); \
+    } \
+    void cheby1_lp_##ol##_reset(cheby1_lp_##ol##_t *f, float equilibrium) { \
+        static_cheby_reset((static_cheby_t *)f, equilibrium); \
+    }
+FOR_EACH_STATIC_CHEBY_LP_ORDER
+#undef X
+
+/* Chebyshev I — highpass */
+#define X(order, ns, ol) \
+    float cheby1_hp_##ol##_update(cheby1_hp_##ol##_t *f, float input) { \
+        return static_cheby_update((static_cheby_t *)f, input); \
+    } \
+    void cheby1_hp_##ol##_reset(cheby1_hp_##ol##_t *f, float equilibrium) { \
+        static_cheby_reset((static_cheby_t *)f, equilibrium); \
+    }
+FOR_EACH_STATIC_CHEBY_LP_ORDER
+#undef X
+
+/* Chebyshev I — bandpass */
+#define X(order, ns, ol) \
+    float cheby1_bp_##ol##_update(cheby1_bp_##ol##_t *f, float input) { \
+        return static_cheby_update((static_cheby_t *)f, input); \
+    } \
+    void cheby1_bp_##ol##_reset(cheby1_bp_##ol##_t *f, float equilibrium) { \
+        static_cheby_reset((static_cheby_t *)f, equilibrium); \
+    }
+FOR_EACH_STATIC_CHEBY_BP_ORDER
+#undef X
+
+/* Chebyshev I — bandstop */
+#define X(order, ns, ol) \
+    float cheby1_bs_##ol##_update(cheby1_bs_##ol##_t *f, float input) { \
+        return static_cheby_update((static_cheby_t *)f, input); \
+    } \
+    void cheby1_bs_##ol##_reset(cheby1_bs_##ol##_t *f, float equilibrium) { \
+        static_cheby_reset((static_cheby_t *)f, equilibrium); \
+    }
+FOR_EACH_STATIC_CHEBY_BP_ORDER
+#undef X
+
+/* Chebyshev II — lowpass */
+#define X(order, ns, ol) \
+    float cheby2_lp_##ol##_update(cheby2_lp_##ol##_t *f, float input) { \
+        return static_cheby_update((static_cheby_t *)f, input); \
+    } \
+    void cheby2_lp_##ol##_reset(cheby2_lp_##ol##_t *f, float equilibrium) { \
+        static_cheby_reset((static_cheby_t *)f, equilibrium); \
+    }
+FOR_EACH_STATIC_CHEBY_LP_ORDER
+#undef X
+
+/* Chebyshev II — highpass */
+#define X(order, ns, ol) \
+    float cheby2_hp_##ol##_update(cheby2_hp_##ol##_t *f, float input) { \
+        return static_cheby_update((static_cheby_t *)f, input); \
+    } \
+    void cheby2_hp_##ol##_reset(cheby2_hp_##ol##_t *f, float equilibrium) { \
+        static_cheby_reset((static_cheby_t *)f, equilibrium); \
+    }
+FOR_EACH_STATIC_CHEBY_LP_ORDER
+#undef X
+
+/* Chebyshev II — bandpass */
+#define X(order, ns, ol) \
+    float cheby2_bp_##ol##_update(cheby2_bp_##ol##_t *f, float input) { \
+        return static_cheby_update((static_cheby_t *)f, input); \
+    } \
+    void cheby2_bp_##ol##_reset(cheby2_bp_##ol##_t *f, float equilibrium) { \
+        static_cheby_reset((static_cheby_t *)f, equilibrium); \
+    }
+FOR_EACH_STATIC_CHEBY_BP_ORDER
+#undef X
+
+/* Chebyshev II — bandstop */
+#define X(order, ns, ol) \
+    float cheby2_bs_##ol##_update(cheby2_bs_##ol##_t *f, float input) { \
+        return static_cheby_update((static_cheby_t *)f, input); \
+    } \
+    void cheby2_bs_##ol##_reset(cheby2_bs_##ol##_t *f, float equilibrium) { \
+        static_cheby_reset((static_cheby_t *)f, equilibrium); \
+    }
+FOR_EACH_STATIC_CHEBY_BP_ORDER
+#undef X

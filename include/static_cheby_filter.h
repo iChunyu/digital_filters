@@ -21,17 +21,6 @@ extern "C" {
     float    fs;           /* sampling frequency in Hz                    */ \
     float    ripple_db;    /* passband ripple (Type I) or stopband attn (Type II) */
 
-/**
- * @brief Base type for unified static_cheby_update() / static_cheby_reset().
- *
- * Cast any cheby1_lp_Nth_t*, cheby2_hp_Nth_t*, etc. pointer to
- * static_cheby_t* — the common prefix guarantees identical memory layout.
- */
-typedef struct {
-    STATIC_CHEBY_FIELDS
-    biquad_filter_t sections[1]; /* placeholder; real count = num_sections */
-} static_cheby_t;
-
 /* ── Order tables (X-macro) ───────────────────────────────────────────── */
 /* order, sections_for_lp_hp, ordinal_label */
 
@@ -155,10 +144,86 @@ FOR_EACH_STATIC_CHEBY_BP_ORDER
 FOR_EACH_STATIC_CHEBY_BP_ORDER
 #undef X
 
-/* ── Unified update / reset ───────────────────────────────────────────── */
+/* ── Per-order update / reset declarations ────────────────────────────── */
 
-float static_cheby_update(static_cheby_t *f, float input);
-void  static_cheby_reset(static_cheby_t *f, float equilibrium);
+/**
+ * @brief Process one sample through a statically-allocated Chebyshev filter.
+ *
+ * Functions follow the naming convention
+ * cheby{1,2}_{lp,hp,bp,bs}_{1st..8th}_update.
+ * If the filter is invalid (!valid), returns @p input unchanged (passthrough).
+ *
+ * @param[in,out] f      Pointer to the filter struct.
+ * @param[in]     input  Current input sample.
+ * @return               Filtered output.
+ */
+
+/**
+ * @brief Reset a statically-allocated Chebyshev filter to steady-state.
+ *
+ * Functions follow the naming convention
+ * cheby{1,2}_{lp,hp,bp,bs}_{1st..8th}_reset.
+ * No-op if the filter is invalid (!valid).
+ *
+ * @param[in,out] f           Pointer to the filter struct.
+ * @param[in]     equilibrium  Constant input value at steady-state.
+ */
+
+/* Chebyshev I — lowpass */
+#define X(order, ns, ol) \
+    float cheby1_lp_##ol##_update(cheby1_lp_##ol##_t *f, float input); \
+    void  cheby1_lp_##ol##_reset(cheby1_lp_##ol##_t *f, float equilibrium);
+FOR_EACH_STATIC_CHEBY_LP_ORDER
+#undef X
+
+/* Chebyshev I — highpass */
+#define X(order, ns, ol) \
+    float cheby1_hp_##ol##_update(cheby1_hp_##ol##_t *f, float input); \
+    void  cheby1_hp_##ol##_reset(cheby1_hp_##ol##_t *f, float equilibrium);
+FOR_EACH_STATIC_CHEBY_LP_ORDER
+#undef X
+
+/* Chebyshev I — bandpass */
+#define X(order, ns, ol) \
+    float cheby1_bp_##ol##_update(cheby1_bp_##ol##_t *f, float input); \
+    void  cheby1_bp_##ol##_reset(cheby1_bp_##ol##_t *f, float equilibrium);
+FOR_EACH_STATIC_CHEBY_BP_ORDER
+#undef X
+
+/* Chebyshev I — bandstop */
+#define X(order, ns, ol) \
+    float cheby1_bs_##ol##_update(cheby1_bs_##ol##_t *f, float input); \
+    void  cheby1_bs_##ol##_reset(cheby1_bs_##ol##_t *f, float equilibrium);
+FOR_EACH_STATIC_CHEBY_BP_ORDER
+#undef X
+
+/* Chebyshev II — lowpass */
+#define X(order, ns, ol) \
+    float cheby2_lp_##ol##_update(cheby2_lp_##ol##_t *f, float input); \
+    void  cheby2_lp_##ol##_reset(cheby2_lp_##ol##_t *f, float equilibrium);
+FOR_EACH_STATIC_CHEBY_LP_ORDER
+#undef X
+
+/* Chebyshev II — highpass */
+#define X(order, ns, ol) \
+    float cheby2_hp_##ol##_update(cheby2_hp_##ol##_t *f, float input); \
+    void  cheby2_hp_##ol##_reset(cheby2_hp_##ol##_t *f, float equilibrium);
+FOR_EACH_STATIC_CHEBY_LP_ORDER
+#undef X
+
+/* Chebyshev II — bandpass */
+#define X(order, ns, ol) \
+    float cheby2_bp_##ol##_update(cheby2_bp_##ol##_t *f, float input); \
+    void  cheby2_bp_##ol##_reset(cheby2_bp_##ol##_t *f, float equilibrium);
+FOR_EACH_STATIC_CHEBY_BP_ORDER
+#undef X
+
+/* Chebyshev II — bandstop */
+#define X(order, ns, ol) \
+    float cheby2_bs_##ol##_update(cheby2_bs_##ol##_t *f, float input); \
+    void  cheby2_bs_##ol##_reset(cheby2_bs_##ol##_t *f, float equilibrium);
+FOR_EACH_STATIC_CHEBY_BP_ORDER
+#undef X
 
 #ifdef __cplusplus
 }

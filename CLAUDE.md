@@ -35,7 +35,7 @@ cd build && ctest --output-on-failure
 | 静态 API (`butter_lp_2nd_t`, `cheby1_hp_3rd_t` 等) | 结构体内嵌数组，零 `malloc` | MCU，阶数编译时确定 |
 
 静态 API 的关键设计：
-- 所有 Butterworth 静态结构体共享统一前缀 (`STATIC_BUTTER_FIELDS`)，因此 **update/reset 只需一套函数**：`static_butter_update` / `static_butter_reset`，通过 `(static_butter_t *)` 强制转换即可通用于全部阶数和类型。Chebyshev 同理 (`static_cheby_t`、`static_cheby_update` / `static_cheby_reset`)。
+- 所有 Butterworth 静态结构体共享统一前缀 (`STATIC_BUTTER_FIELDS`)，内部通过 `(static_butter_t *)` 强转复用共享逻辑。对外 exposed 的 update/reset 按阶数/类型分别定义（如 `butter_lp_2nd_update`、`butter_hp_3rd_reset`），调用时无需强转。Chebyshev 同理 (`STATIC_CHEBY_FIELDS`、`cheby1_lp_2nd_update` 等)。
 - 只有 `_init` 按阶数分别定义，因为不同阶数需要不同大小的栈上临时数组。
 - Butterworth 原型极点仅依赖阶数 N，预计算为 `static const complex_t butter_proto[8][8]` 存入 ROM（~512 字节），init 时无需调用 `cosf`/`sinf`。
 - Chebyshev 原型依赖 ripple，在 init 时运行时计算。
@@ -76,7 +76,7 @@ cd build && ctest --output-on-failure
 - Chenyshev II 的 ε 参数公式：`ε = 1 / sqrt(10^(dB/10) - 1)`（与 Type I 的 `ε = sqrt(10^(dB/10) - 1)` 互为倒数）。
 
 **静态 API 滤波器对象 (static_butter_filter / static_cheby_filter)**
-- 每个滤波器族有统一基类型 (`static_butter_t`, `static_cheby_t`)，所有按阶数/类型定义的结构体共享相同前缀布局，可安全强制转换。
+- 所有按阶数/类型定义的结构体共享统一前缀（`STATIC_BUTTER_FIELDS` / `STATIC_CHEBY_FIELDS`），内部通过基类型强转复用共享逻辑，但对外暴露的 `_update` / `_reset` 均按具体类型定义（如 `butter_lp_2nd_update`），调用时无需强转。
 - 结构体通过 X-macro 生成：`FOR_EACH_STATIC_BUTTER_LP_ORDER` (order, sections, ordinal) 和 `FOR_EACH_STATIC_BUTTER_BP_ORDER`。每个滤波器族 32 个结构体（4 种类型 × 8 阶），Chebyshev 为 64 个（I 和 II 各 32 个）。
 - `_init` 函数接收截止频率和（对于 Chebyshev）ripple，在栈上完成设计流水线，将系数部署到内嵌的 `biquad_filter_t sections[]` 中。
 - 无需 `_destroy` — 结构体离开作用域即自动回收。
@@ -90,15 +90,15 @@ cd build && ctest --output-on-failure
 | `include/filter_utils.h` | 设计时工具 (complex_t, prewarp, 变换, zpk2sos) |
 | `include/butter_filter.h` | Butterworth 动态 API |
 | `include/cheby_filter.h` | Chebyshev I & II 动态 API |
-| `include/static_butter_filter.h` | Butterworth 静态 API（32 个按阶结构体，统一 update/reset） |
-| `include/static_cheby_filter.h` | Chebyshev I & II 静态 API（64 个按阶结构体，统一 update/reset） |
+| `include/static_butter_filter.h` | Butterworth 静态 API（32 个按阶结构体，按阶 update/reset） |
+| `include/static_cheby_filter.h` | Chebyshev I & II 静态 API（64 个按阶结构体，按阶 update/reset） |
 | `src/biquad_filter.c` | Biquad 实现 |
 | `src/sos_filter.c` | SOS 级联实现（含 malloc/free） |
 | `src/filter_utils.c` | 设计工具实现 |
 | `src/butter_filter.c` | Butterworth 原型 + 动态 init/destroy/update/reset |
 | `src/cheby_filter.c` | Chebyshev I & II 原型 + 动态 init/destroy/update/reset |
-| `src/static_butter_filter.c` | 预计算极点表、共享流水线、按阶 init、统一 update/reset |
-| `src/static_cheby_filter.c` | 运行时原型计算、共享流水线、按阶 init、统一 update/reset |
+| `src/static_butter_filter.c` | 预计算极点表、共享流水线、按阶 init/update/reset |
+| `src/static_cheby_filter.c` | 运行时原型计算、共享流水线、按阶 init/update/reset |
 | `test/test_biquad.c` | Biquad 测试 (CHECK/CLOSE 框架) |
 | `test/test_sos.c` | SOS 级联测试 |
 | `test/test_butter.c` | Butterworth 动态 API 测试 (LP/HP/BP/BS) |

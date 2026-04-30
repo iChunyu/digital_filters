@@ -29,7 +29,7 @@
 | **适用** | 桌面端、阶数可变 | MCU、裸机、堆不可用 |
 
 静态 API 的关键设计：
-- **统一 update/reset**：所有阶数和类型的 Butterworth 静态结构体共享 `STATIC_BUTTER_FIELDS` 前缀，只需 `static_butter_update` / `static_butter_reset` 两个函数。Chebyshev 同理。
+- **按阶 update/reset**：每个阶数/类型组合有各自的 `_update` / `_reset` 函数（如 `butter_lp_2nd_update`），调用时无需强转。内部通过共享前缀 `STATIC_BUTTER_FIELDS` 复用实现。Chebyshev 同理。
 - **预计算极点表**：Butterworth 原型极点仅与阶数有关，以 `static const` 存入 ROM（~512 字节），init 时无需调用三角函数。
 - **栈上设计流水线**：init 时整个模拟原型→频率变换→双线性变换→零极点配对过程在栈上完成，最大约 448 字节临时空间（8 阶 BP/BS）。
 
@@ -60,11 +60,11 @@ butter_lp_2nd_t filter;
 butter_lp_2nd_init(&filter, 2.0f, 20.0f);
 
 // 设置为稳态（DC 输入为 1.0）
-static_butter_reset((static_butter_t *)&filter, 1.0f);
+butter_lp_2nd_reset(&filter, 1.0f);
 
 // 处理采样
 for (int i = 0; i < 1000; i++) {
-    float output = static_butter_update((static_butter_t *)&filter, input[i]);
+    float output = butter_lp_2nd_update(&filter, input[i]);
     // 使用 output ...
 }
 
@@ -77,8 +77,8 @@ for (int i = 0; i < 1000; i++) {
 butter_bp_2nd_t bp;
 butter_bp_2nd_init(&bp, 2.0f, 5.0f, 40.0f);  // fc1, fc2, fs
 
-static_butter_reset((static_butter_t *)&bp, 0.0f);
-float y = static_butter_update((static_butter_t *)&bp, x);
+butter_bp_2nd_reset(&bp, 0.0f);
+float y = butter_bp_2nd_update(&bp, x);
 ```
 
 Chebyshev Type I 示例（引入纹波参数）：
@@ -87,8 +87,8 @@ Chebyshev Type I 示例（引入纹波参数）：
 cheby1_lp_3rd_t c1;
 cheby1_lp_3rd_init(&c1, 3.0f, 20.0f, 0.5f);  // fc, fs, ripple_db
 
-static_cheby_reset((static_cheby_t *)&c1, 1.0f);
-float y = static_cheby_update((static_cheby_t *)&c1, x);
+cheby1_lp_3rd_reset(&c1, 1.0f);
+float y = cheby1_lp_3rd_update(&c1, x);
 ```
 
 Chebyshev Type II 示例（阻带衰减）：
@@ -97,8 +97,8 @@ Chebyshev Type II 示例（阻带衰减）：
 cheby2_hp_2nd_t c2;
 cheby2_hp_2nd_init(&c2, 5.0f, 40.0f, 40.0f);  // fc, fs, stopband_dB
 
-static_cheby_reset((static_cheby_t *)&c2, 0.0f);
-float y = static_cheby_update((static_cheby_t *)&c2, x);
+cheby2_hp_2nd_reset(&c2, 0.0f);
+float y = cheby2_hp_2nd_update(&c2, x);
 ```
 
 ### 基本用法（动态 API — 桌面端使用）
@@ -128,6 +128,11 @@ butter_destroy(&b);  // 必须调用！
 ```
 
 示例：`butter_lp_2nd_t`, `cheby1_bp_5th_t`, `cheby2_bs_3rd_t`
+
+对应的 init / update / reset 函数命名规则一致：
+- `{族}_{类型}_{阶数序数}_init(f, ...)`
+- `{族}_{类型}_{阶数序数}_update(f, input)`
+- `{族}_{类型}_{阶数序数}_reset(f, equilibrium)`
 
 ## 阶数与节数
 
@@ -218,7 +223,9 @@ digital_filters/
 │   ├── test_butter.c
 │   ├── test_cheby.c
 │   ├── test_static_butter.c
-│   └── test_static_cheby.c
+│   ├── test_static_cheby.c
+│   ├── test_butter_with_py.c     # 生成 CSV 与 Python 参考对比
+│   └── test_cheby_with_py.c      # 生成 CSV 与 Python 参考对比
 ├── CMakeLists.txt
 ├── CLAUDE.md
 └── README.md
