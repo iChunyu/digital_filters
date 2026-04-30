@@ -262,9 +262,10 @@ static inline float c_dist(const complex_t *a, const complex_t *b)
     return sqrtf(dr * dr + di * di);
 }
 
+/* Relative tolerance: |im| <= eps * |z|  (matches scipy _cplxreal). */
 static inline int is_real(const complex_t *a, float eps)
 {
-    return fabsf(a->im) <= eps;
+    return fabsf(a->im) <= eps * sqrtf(a->re * a->re + a->im * a->im);
 }
 
 /* Remove element at idx from array of length *len (shift remaining left).
@@ -368,35 +369,42 @@ static uint8_t find_nearest(const complex_t *arr, const uint8_t *used, uint8_t n
     return idx;
 }
 
-/* Count used elements with a given real/complex property. */
+/* Count unused elements with a given real/complex property. */
 static uint8_t count_used(const uint8_t *used, uint8_t n,
-                          const complex_t *arr, int want_real)
+                          const complex_t *arr, int want_real, float eps)
 {
     uint8_t cnt = 0;
     for (uint8_t i = 0; i < n; i++) {
-        if (!used[i] && is_real(&arr[i], 1e-7f) == want_real) {
+        if (!used[i] && is_real(&arr[i], eps) == want_real) {
             cnt++;
         }
     }
     return cnt;
 }
 
-/* Find the conjugate of zp[idx] and mark it used. */
+/* Find the conjugate of zp[idx] among unused elements and mark it used.
+   Matching tolerance is relative: |candidate - conj(target)| <= eps * |target|.
+   On failure, synthesises the conjugate (no element consumed). */
 static void claim_conjugate(const complex_t *arr, uint8_t *used, uint8_t n,
-                            uint8_t idx, complex_t *out)
+                            uint8_t idx, complex_t *out, float eps)
 {
-    float eps = 1e-5f;
+    float mag = sqrtf(arr[idx].re * arr[idx].re + arr[idx].im * arr[idx].im);
+    float thresh = eps * (mag > 1e-12f ? mag : 1.0f);
     for (uint8_t i = 0; i < n; i++) {
         if (used[i]) continue;
-        if (fabsf(arr[i].re - arr[idx].re) < eps
-            && fabsf(arr[i].im + arr[idx].im) < eps) {
+        if (fabsf(arr[i].re - arr[idx].re) <= thresh
+            && fabsf(arr[i].im + arr[idx].im) <= thresh) {
             used[i] = 1;
-            *out = arr[i];
+            /* Average the pair (mirrors scipy _cplxreal).
+               arr[i] has opposite imag sign to arr[idx].
+               Return arr[i] averaged with conj(arr[idx]) so the caller
+               gets the true conjugate of the primary element. */
+            out->re = 0.5f * (arr[idx].re + arr[i].re);
+            out->im = 0.5f * (arr[i].im - arr[idx].im);
             return;
         }
     }
-    /* Fallback: exact conjugate not found; synthesise it.  This can happen
-       due to floating-point rounding in the bilinear transform. */
+    /* Last resort: numerical mismatch — synthesise the conjugate. */
     out->re =  arr[idx].re;
     out->im = -arr[idx].im;
 }
@@ -419,9 +427,13 @@ uint8_t zpk2sos(const complex_t *zeros, const complex_t *poles, uint8_t n,
     uint8_t n_p = n;
     uint8_t n_z = n;
     uint8_t section = 0;
-    const float eps_real = 1e-7f;
+    uint8_t max_sections = (n + 1) / 2;
+    const float eps_real = 1e-4f;
 
     while (n_p > 0) {
+        /* Safety cap: never exceed allocated rows. */
+        if (section >= max_sections) break;
+
         /* 1. Pick the most unfavorable (largest |p|) remaining pole. */
         uint8_t p1_i = find_worst_pole(wp, used_p, n);
         complex_t p1 = wp[p1_i];
@@ -432,7 +444,7 @@ uint8_t zpk2sos(const complex_t *zeros, const complex_t *poles, uint8_t n,
 
         if (is_real(&p1, eps_real)) {
             /* p1 is real — try to pair with another real pole. */
-            if (count_used(used_p, n, wp, 1) > 0) {
+            if (count_used(used_p, n, wp, 1, eps_real) > 0) {
                 uint8_t p2_i = find_nearest(wp, used_p, n, &p1);
                 p2 = wp[p2_i];
                 used_p[p2_i] = 1;
@@ -460,7 +472,7 @@ uint8_t zpk2sos(const complex_t *zeros, const complex_t *poles, uint8_t n,
             }
         } else {
             /* p1 is complex — pair with its conjugate. */
-            claim_conjugate(wp, used_p, n, p1_i, &p2);
+            claim_conjugate(wp, used_p, n, p1_i, &p2, eps_real);
             n_p--;
         }
 
@@ -468,7 +480,7 @@ uint8_t zpk2sos(const complex_t *zeros, const complex_t *poles, uint8_t n,
         uint8_t z1_i = find_nearest(wz, used_z, n, &p1);
 
         if (is_real(&wz[z1_i], eps_real)) {
-            if (count_used(used_z, n, wz, 1) > 1) {
+            if (count_used(used_z, n, wz, 1, eps_real) > 1) {
                 /* Two real zeros available — use z1 and the nearest other real. */
                 z1 = wz[z1_i];
                 used_z[z1_i] = 1;
@@ -493,7 +505,7 @@ uint8_t zpk2sos(const complex_t *zeros, const complex_t *poles, uint8_t n,
                 used_z[best_i] = 1;
                 n_z--;
 
-                claim_conjugate(wz, used_z, n, best_i, &z2);
+                claim_conjugate(wz, used_z, n, best_i, &z2, eps_real);
                 n_z--;
             }
         } else {
@@ -502,7 +514,7 @@ uint8_t zpk2sos(const complex_t *zeros, const complex_t *poles, uint8_t n,
             used_z[z1_i] = 1;
             n_z--;
 
-            claim_conjugate(wz, used_z, n, z1_i, &z2);
+            claim_conjugate(wz, used_z, n, z1_i, &z2, eps_real);
             n_z--;
         }
 
