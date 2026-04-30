@@ -34,7 +34,7 @@ int main(void)
     float den_s[3] = {1.0f, 1.41421356f, 1.0f};
 
     float num_z[3], den_z[3];
-    biquad_c2d_bilnear(num_z, den_z, num_s, den_s, 10.0f);
+    biquad_c2d_bilinear(num_z, den_z, num_s, den_s, 10.0f);
 
     biquad_filter_t lpf;
     biquad_filter_init(&lpf, num_z, den_z);

@@ -5,6 +5,10 @@ void sos_filter_init(sos_filter_t *filter, uint8_t num_sections)
 {
     filter->num_sections = num_sections;
     filter->sections = (biquad_filter_t *)malloc(num_sections * sizeof(biquad_filter_t));
+    if (filter->sections == NULL) {
+        filter->num_sections = 0;
+        return;
+    }
 
     for (uint8_t i = 0; i < num_sections; i++) {
         biquad_filter_set_empty(&filter->sections[i]);

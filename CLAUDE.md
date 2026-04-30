@@ -48,7 +48,7 @@ cd build && ctest --output-on-failure
 - **静默降级为直通**: 若分母为零或极点不稳定，`biquad_filter_init()` 静默地将滤波器替换为单位直通 (`H(z) = 1`)。无错误码。
 - **稳定性检测** 使用二阶系统的全部三个 **Jury 条件**: `|a2| < 1`, `1 + a1 + a2 > 0`, `1 - a1 + a2 > 0`。
 - **状态向量 `w[3]`** 保存 `w[n], w[n-1], w[n-2]` — 规范型 Direct Form II 信号流图中的中间节点。每个 biquad 仅需 3 个 float 状态。
-- **双线性变换** (`biquad_c2d_bilnear`) 使用代换 `s = 2·fs · (1 - z⁻¹)/(1 + z⁻¹)` 将 s 域映射到 z 域。
+- **双线性变换** (`biquad_c2d_bilinear`) 使用代换 `s = 2·fs · (1 - z⁻¹)/(1 + z⁻¹)` 将 s 域映射到 z 域。
 - **稳态复位** 计算 `w_ss = equilibrium / (1 + a1 + a2)`。分母保证非零，因为 `biquad_filter_init()` 强制 `1 + a1 + a2 > 0`（否则降级为直通，此时 `a1 = a2 = 0`）。
 - `biquad_filter_get_input()` 从状态重建 `x[n]` — 用于调试或滤波器级联。
 

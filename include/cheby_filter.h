@@ -33,7 +33,7 @@ void cheby1_init(cheby1_t *c, uint8_t type, uint8_t order,
                  float fc1, float fc2, float fs, float ripple_db);
 void cheby1_destroy(cheby1_t *c);
 float cheby1_update(cheby1_t *c, float input);
-float cheby1_reset(cheby1_t *c, float equilibrium);
+void cheby1_reset(cheby1_t *c, float equilibrium);
 
 /* ================================================================== */
 
@@ -59,7 +59,7 @@ void cheby2_init(cheby2_t *c, uint8_t type, uint8_t order,
                  float fc1, float fc2, float fs, float ripple_db);
 void cheby2_destroy(cheby2_t *c);
 float cheby2_update(cheby2_t *c, float input);
-float cheby2_reset(cheby2_t *c, float equilibrium);
+void cheby2_reset(cheby2_t *c, float equilibrium);
 
 #ifdef __cplusplus
 }

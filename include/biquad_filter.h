@@ -66,7 +66,7 @@ typedef struct {
  * @param[in]  den_s  s-domain denominator [A0, A1, A2].
  * @param[in]  fs     Sampling frequency in Hz.
  */
-void biquad_c2d_bilnear(float num_z[3], float den_z[3], const float num_s[3],
+void biquad_c2d_bilinear(float num_z[3], float den_z[3], const float num_s[3],
                         const float den_s[3], float fs);
 
 /**

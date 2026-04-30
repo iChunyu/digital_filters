@@ -139,11 +139,10 @@ float butter_update(butter_t *b, float input)
     return sos_filter_update(b->sos, input);
 }
 
-float butter_reset(butter_t *b, float equilibrium)
+void butter_reset(butter_t *b, float equilibrium)
 {
     if (!b->valid || b->sos == NULL) {
-        return equilibrium;
+        return;
     }
     sos_filter_reset(b->sos, equilibrium);
-    return sos_filter_get_output(b->sos);
 }

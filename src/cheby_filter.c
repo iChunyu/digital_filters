@@ -141,11 +141,10 @@ float cheby1_update(cheby1_t *c, float input)
     return sos_filter_update(c->sos, input);
 }
 
-float cheby1_reset(cheby1_t *c, float equilibrium)
+void cheby1_reset(cheby1_t *c, float equilibrium)
 {
-    if (!c->valid || c->sos == NULL) return equilibrium;
+    if (!c->valid || c->sos == NULL) return;
     sos_filter_reset(c->sos, equilibrium);
-    return sos_filter_get_output(c->sos);
 }
 
 /* ================================================================== */
@@ -305,9 +304,8 @@ float cheby2_update(cheby2_t *c, float input)
     return sos_filter_update(c->sos, input);
 }
 
-float cheby2_reset(cheby2_t *c, float equilibrium)
+void cheby2_reset(cheby2_t *c, float equilibrium)
 {
-    if (!c->valid || c->sos == NULL) return equilibrium;
+    if (!c->valid || c->sos == NULL) return;
     sos_filter_reset(c->sos, equilibrium);
-    return sos_filter_get_output(c->sos);
 }

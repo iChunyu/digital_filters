@@ -78,7 +78,7 @@ float butter_update(butter_t *b, float input);
  * @param[in,out] b           Pointer to the butter_t object.
  * @param[in]     equilibrium  Constant input value at steady-state.
  */
-float butter_reset(butter_t *b, float equilibrium);
+void butter_reset(butter_t *b, float equilibrium);
 
 #ifdef __cplusplus
 }
