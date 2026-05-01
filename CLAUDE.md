@@ -35,7 +35,7 @@ cd build && ctest --output-on-failure
 | 静态 API (`butter_lp_2nd_t`, `cheby1_hp_3rd_t` 等) | 结构体内嵌数组，零 `malloc` | MCU，阶数编译时确定 |
 
 静态 API 的关键设计：
-- 所有 Butterworth 静态结构体共享统一前缀 (`STATIC_BUTTER_FIELDS`)，内部通过 `(static_butter_t *)` 强转复用共享逻辑。对外 exposed 的 update/reset 按阶数/类型分别定义（如 `butter_lp_2nd_update`、`butter_hp_3rd_reset`），调用时无需强转。Chebyshev 同理 (`STATIC_CHEBY_FIELDS`、`cheby1_lp_2nd_update` 等)。
+- 所有 Butterworth 静态结构体共享统一前缀 (`STATIC_BUTTER_FIELDS`)。内部辅助函数直接接收 `biquad_filter_t *sections` + 参数，宏生成的 init/update/reset 在调用侧传递对应字段，无需结构体强转。内部函数命名遵循 `static_butter_{type}_{func}` 规则（如 `static_butter_lp_init`、`static_butter_design`）。对外 exposed 的 update/reset 按阶数/类型分别定义（如 `butter_lp_2nd_update`），调用时无需强转。Chebyshev 同理（`STATIC_CHEBY_FIELDS`、`static_cheby_design`、`static_cheby1_lp_init` 等）。
 - 只有 `_init` 按阶数分别定义，因为不同阶数需要不同大小的栈上临时数组。
 - Butterworth 原型极点仅依赖阶数 N，预计算为 `static const complex_t butter_proto[8][8]` 存入 ROM（~512 字节），init 时无需调用 `cosf`/`sinf`。
 - Chebyshev 原型依赖 ripple，在 init 时运行时计算。
@@ -76,7 +76,7 @@ cd build && ctest --output-on-failure
 - Chenyshev II 的 ε 参数公式：`ε = 1 / sqrt(10^(dB/10) - 1)`（与 Type I 的 `ε = sqrt(10^(dB/10) - 1)` 互为倒数）。
 
 **静态 API 滤波器对象 (static_butter_filter / static_cheby_filter)**
-- 所有按阶数/类型定义的结构体共享统一前缀（`STATIC_BUTTER_FIELDS` / `STATIC_CHEBY_FIELDS`），内部通过基类型强转复用共享逻辑，但对外暴露的 `_update` / `_reset` 均按具体类型定义（如 `butter_lp_2nd_update`），调用时无需强转。
+- 所有按阶数/类型定义的结构体共享统一前缀（`STATIC_BUTTER_FIELDS` / `STATIC_CHEBY_FIELDS`）。内部辅助函数直接接收 `biquad_filter_t *sections`，宏生成的 init/update/reset 负责传递对应字段和元数据设置，对外 exposed 的 `_update` / `_reset` 均按具体类型定义（如 `butter_lp_2nd_update`），调用时无需强转。内部函数遵循 `static_{butter,cheby{1,2}}_{type}_{func}` 命名规则。
 - 结构体通过 X-macro 生成：`FOR_EACH_STATIC_BUTTER_LP_ORDER` (order, sections, ordinal) 和 `FOR_EACH_STATIC_BUTTER_BP_ORDER`。每个滤波器族 32 个结构体（4 种类型 × 8 阶），Chebyshev 为 64 个（I 和 II 各 32 个）。
 - `_init` 函数接收截止频率和（对于 Chebyshev）ripple，在栈上完成设计流水线，将系数部署到内嵌的 `biquad_filter_t sections[]` 中。
 - 无需 `_destroy` — 结构体离开作用域即自动回收。

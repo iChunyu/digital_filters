@@ -29,7 +29,7 @@
 | **适用** | 桌面端、阶数可变 | MCU、裸机、堆不可用 |
 
 静态 API 的关键设计：
-- **按阶 update/reset**：每个阶数/类型组合有各自的 `_update` / `_reset` 函数（如 `butter_lp_2nd_update`），调用时无需强转。内部通过共享前缀 `STATIC_BUTTER_FIELDS` 复用实现。Chebyshev 同理。
+- **按阶 update/reset**：每个阶数/类型组合有各自的 `_update` / `_reset` 函数（如 `butter_lp_2nd_update`），调用时无需强转。内部辅助函数直接接收 `biquad_filter_t *sections`，宏生成的包装函数负责元数据设置与 valid 检查。
 - **预计算极点表**：Butterworth 原型极点仅与阶数有关，以 `static const` 存入 ROM（~512 字节），init 时无需调用三角函数。
 - **栈上设计流水线**：init 时整个模拟原型→频率变换→双线性变换→零极点配对过程在栈上完成，最大约 448 字节临时空间（8 阶 BP/BS）。
 
@@ -178,7 +178,7 @@ f_analog = fs/π · tan(π · f_digital / fs)
 
 ### 参数校验
 
-- 阶数必须 ≥ 1 且 ≤ 8（静态 API 编译时保证；动态 API 运行时检查）。
+- 阶数必须 ≥ 1 且 ≤ 8（静态 API 编译时保证；动态 API 建议 ≤ 32，BP/BS 超出会触发栈溢出）。
 - 截止频率必须满足 `0 < fc < fs/2`。
 - BP/BS 的 `fc1` 必须 `< fc2` 且 `fc2 < fs/2`。
 - Chebyshev 的 `ripple_db` 必须 > 0。
@@ -225,7 +225,9 @@ digital_filters/
 │   ├── test_static_butter.c
 │   ├── test_static_cheby.c
 │   ├── test_butter_with_py.c     # 生成 CSV 与 Python 参考对比
-│   └── test_cheby_with_py.c      # 生成 CSV 与 Python 参考对比
+│   ├── test_cheby_with_py.c      # 生成 CSV 与 Python 参考对比
+│   ├── test_butter_use_py.py     # Python 参考滤波器（Butterworth）
+│   └── test_cheby_use_py.py      # Python 参考滤波器（Chebyshev）
 ├── CMakeLists.txt
 ├── CLAUDE.md
 └── README.md

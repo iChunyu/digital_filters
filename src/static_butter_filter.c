@@ -2,12 +2,6 @@
 #include <math.h>
 #include <string.h>
 
-/* Base type for internal casting — prefix matches all static Butterworth structs. */
-typedef struct {
-    STATIC_BUTTER_FIELDS
-    biquad_filter_t sections[1];
-} static_butter_t;
-
 /* ================================================================== */
 /*  Pre-computed Butterworth prototype poles (orders 1–8)              */
 /* ================================================================== */
@@ -76,13 +70,13 @@ static const complex_t butter_proto[8][8] = {
  * @param max_sections  Capacity of @p sections.
  * @param order         Prototype filter order N.
  * @param type          filter_type_e.
- * @param wc1           Pre-warped lower cutoff rad/s (2π·prewarp(fc1, fs)).
+ * @param wc1           Pre-warped lower cutoff rad/s (2π·prewarp(fc, fs)).
  * @param wc2           Pre-warped upper cutoff rad/s for BP/BS (unused for LP/HP).
  * @param fs            Sampling frequency in Hz.
  * @param w0_norm       Digital normalisation frequency (rad/sample).
  * @return              Number of sections deployed, or 0 on failure.
  */
-static uint8_t butter_design_static(biquad_filter_t *sections,
+static uint8_t static_butter_design(biquad_filter_t *sections,
                                      uint8_t max_sections,
                                      uint8_t order, uint8_t type,
                                      float wc1, float wc2, float fs,
@@ -157,98 +151,88 @@ static uint8_t butter_design_static(biquad_filter_t *sections,
 }
 
 /* ================================================================== */
-/*  Per-order init helpers (called from macro-generated functions)     */
+/*  Per-type init helpers                                              */
 /* ================================================================== */
 
-static void butter_static_init_lp(static_butter_t *f, uint8_t order,
-                                   float fc, float fs)
+static uint8_t static_butter_lp_init(biquad_filter_t *sections,
+                                      uint8_t max_sections,
+                                      uint8_t order, float fc, float fs)
 {
-    f->valid = 0;
-    f->type  = FILTER_LOWPASS;
-    f->order = order;
-    f->fc1   = fc;
-    f->fc2   = 0.0f;
-    f->fs    = fs;
-
-    if (order == 0 || fc <= 0.0f || fc >= fs * 0.5f) return;
+    if (order == 0 || fc <= 0.0f || fc >= fs * 0.5f) return 0;
 
     float wc = 2.0f * (float)M_PI * prewarp(fc, fs);
-    uint8_t ns = butter_design_static(f->sections, f->num_sections,
-                                       order, FILTER_LOWPASS,
-                                       wc, 0.0f, fs, 0.0f);
-    if (ns == 0) return;
-    f->num_sections = ns;
-    f->valid = 1;
+    return static_butter_design(sections, max_sections,
+                                 order, FILTER_LOWPASS,
+                                 wc, 0.0f, fs, 0.0f);
 }
 
-static void butter_static_init_hp(static_butter_t *f, uint8_t order,
-                                   float fc, float fs)
+static uint8_t static_butter_hp_init(biquad_filter_t *sections,
+                                      uint8_t max_sections,
+                                      uint8_t order, float fc, float fs)
 {
-    f->valid = 0;
-    f->type  = FILTER_HIGHPASS;
-    f->order = order;
-    f->fc1   = fc;
-    f->fc2   = 0.0f;
-    f->fs    = fs;
-
-    if (order == 0 || fc <= 0.0f || fc >= fs * 0.5f) return;
+    if (order == 0 || fc <= 0.0f || fc >= fs * 0.5f) return 0;
 
     float wc = 2.0f * (float)M_PI * prewarp(fc, fs);
-    uint8_t ns = butter_design_static(f->sections, f->num_sections,
-                                       order, FILTER_HIGHPASS,
-                                       wc, 0.0f, fs, (float)M_PI);
-    if (ns == 0) return;
-    f->num_sections = ns;
-    f->valid = 1;
+    return static_butter_design(sections, max_sections,
+                                 order, FILTER_HIGHPASS,
+                                 wc, 0.0f, fs, (float)M_PI);
 }
 
-static void butter_static_init_bp(static_butter_t *f, uint8_t order,
-                                   float fc1, float fc2, float fs)
+static uint8_t static_butter_bp_init(biquad_filter_t *sections,
+                                      uint8_t max_sections,
+                                      uint8_t order,
+                                      float fc1, float fc2, float fs)
 {
-    f->valid = 0;
-    f->type  = FILTER_BANDPASS;
-    f->order = order;
-    f->fc1   = fc1;
-    f->fc2   = fc2;
-    f->fs    = fs;
-
-    if (order == 0 || fc1 <= 0.0f || fc1 >= fs * 0.5f) return;
-    if (fc2 <= fc1 || fc2 >= fs * 0.5f) return;
+    if (order == 0 || fc1 <= 0.0f || fc1 >= fs * 0.5f) return 0;
+    if (fc2 <= fc1 || fc2 >= fs * 0.5f) return 0;
 
     float wc1 = 2.0f * (float)M_PI * prewarp(fc1, fs);
     float wc2 = 2.0f * (float)M_PI * prewarp(fc2, fs);
     float w0_norm = 2.0f * (float)M_PI * sqrtf(fc1 * fc2) / fs;
 
-    uint8_t ns = butter_design_static(f->sections, f->num_sections,
-                                       order, FILTER_BANDPASS,
-                                       wc1, wc2, fs, w0_norm);
-    if (ns == 0) return;
-    f->num_sections = ns;
-    f->valid = 1;
+    return static_butter_design(sections, max_sections,
+                                 order, FILTER_BANDPASS,
+                                 wc1, wc2, fs, w0_norm);
 }
 
-static void butter_static_init_bs(static_butter_t *f, uint8_t order,
-                                   float fc1, float fc2, float fs)
+static uint8_t static_butter_bs_init(biquad_filter_t *sections,
+                                      uint8_t max_sections,
+                                      uint8_t order,
+                                      float fc1, float fc2, float fs)
 {
-    f->valid = 0;
-    f->type  = FILTER_BANDSTOP;
-    f->order = order;
-    f->fc1   = fc1;
-    f->fc2   = fc2;
-    f->fs    = fs;
-
-    if (order == 0 || fc1 <= 0.0f || fc1 >= fs * 0.5f) return;
-    if (fc2 <= fc1 || fc2 >= fs * 0.5f) return;
+    if (order == 0 || fc1 <= 0.0f || fc1 >= fs * 0.5f) return 0;
+    if (fc2 <= fc1 || fc2 >= fs * 0.5f) return 0;
 
     float wc1 = 2.0f * (float)M_PI * prewarp(fc1, fs);
     float wc2 = 2.0f * (float)M_PI * prewarp(fc2, fs);
 
-    uint8_t ns = butter_design_static(f->sections, f->num_sections,
-                                       order, FILTER_BANDSTOP,
-                                       wc1, wc2, fs, 0.0f);
-    if (ns == 0) return;
-    f->num_sections = ns;
-    f->valid = 1;
+    return static_butter_design(sections, max_sections,
+                                 order, FILTER_BANDSTOP,
+                                 wc1, wc2, fs, 0.0f);
+}
+
+/* ================================================================== */
+/*  Internal helpers                                                    */
+/* ================================================================== */
+
+static float static_butter_update(biquad_filter_t *sections,
+                                   uint8_t num_sections, float input)
+{
+    float x = input;
+    for (uint8_t i = 0; i < num_sections; i++) {
+        x = biquad_filter_update(&sections[i], x);
+    }
+    return x;
+}
+
+static void static_butter_reset(biquad_filter_t *sections,
+                                 uint8_t num_sections, float equilibrium)
+{
+    float x = equilibrium;
+    for (uint8_t i = 0; i < num_sections; i++) {
+        biquad_filter_reset(&sections[i], x);
+        x = biquad_filter_get_output(&sections[i]);
+    }
 }
 
 /* ================================================================== */
@@ -261,116 +245,130 @@ static void butter_static_init_bs(static_butter_t *f, uint8_t order,
  * BP init:  butter_bp_Nth_init(f, fc1, fc2, fs)
  * BS init:  butter_bs_Nth_init(f, fc1, fc2, fs)
  *
- * Each sets num_sections from the struct's array size before calling the
- * shared helper, so the helper can validate capacity.
+ * Each sets metadata fields, validates via the per-type helper, and sets
+ * num_sections and valid from the helper's return value.
  */
 
 /* Lowpass */
-#define X(order, ns, ol) \
+#define X(ord, ns, ol) \
     void butter_lp_##ol##_init(butter_lp_##ol##_t *f, float fc, float fs) { \
-        f->num_sections = ns; \
-        butter_static_init_lp((static_butter_t *)f, order, fc, fs); \
+        f->type = FILTER_LOWPASS; \
+        f->order = ord; \
+        f->fc1 = fc; \
+        f->fc2 = 0.0f; \
+        f->fs = fs; \
+        f->valid = 0; \
+        uint8_t n = static_butter_lp_init(f->sections, ns, ord, fc, fs); \
+        if (n == 0) return; \
+        f->num_sections = n; \
+        f->valid = 1; \
     }
 FOR_EACH_STATIC_BUTTER_LP_ORDER
 #undef X
 
 /* Highpass */
-#define X(order, ns, ol) \
+#define X(ord, ns, ol) \
     void butter_hp_##ol##_init(butter_hp_##ol##_t *f, float fc, float fs) { \
-        f->num_sections = ns; \
-        butter_static_init_hp((static_butter_t *)f, order, fc, fs); \
+        f->type = FILTER_HIGHPASS; \
+        f->order = ord; \
+        f->fc1 = fc; \
+        f->fc2 = 0.0f; \
+        f->fs = fs; \
+        f->valid = 0; \
+        uint8_t n = static_butter_hp_init(f->sections, ns, ord, fc, fs); \
+        if (n == 0) return; \
+        f->num_sections = n; \
+        f->valid = 1; \
     }
 FOR_EACH_STATIC_BUTTER_LP_ORDER
 #undef X
 
 /* Bandpass */
-#define X(order, ns, ol) \
+#define X(ord, ns, ol) \
     void butter_bp_##ol##_init(butter_bp_##ol##_t *f, float fc1, float fc2, float fs) { \
-        f->num_sections = ns; \
-        butter_static_init_bp((static_butter_t *)f, order, fc1, fc2, fs); \
+        f->type = FILTER_BANDPASS; \
+        f->order = ord; \
+        f->fc1 = fc1; \
+        f->fc2 = fc2; \
+        f->fs = fs; \
+        f->valid = 0; \
+        uint8_t n = static_butter_bp_init(f->sections, ns, ord, fc1, fc2, fs); \
+        if (n == 0) return; \
+        f->num_sections = n; \
+        f->valid = 1; \
     }
 FOR_EACH_STATIC_BUTTER_BP_ORDER
 #undef X
 
 /* Bandstop */
-#define X(order, ns, ol) \
+#define X(ord, ns, ol) \
     void butter_bs_##ol##_init(butter_bs_##ol##_t *f, float fc1, float fc2, float fs) { \
-        f->num_sections = ns; \
-        butter_static_init_bs((static_butter_t *)f, order, fc1, fc2, fs); \
+        f->type = FILTER_BANDSTOP; \
+        f->order = ord; \
+        f->fc1 = fc1; \
+        f->fc2 = fc2; \
+        f->fs = fs; \
+        f->valid = 0; \
+        uint8_t n = static_butter_bs_init(f->sections, ns, ord, fc1, fc2, fs); \
+        if (n == 0) return; \
+        f->num_sections = n; \
+        f->valid = 1; \
     }
 FOR_EACH_STATIC_BUTTER_BP_ORDER
 #undef X
-
-/* ================================================================== */
-/*  Internal helpers                                                    */
-/* ================================================================== */
-
-static float static_butter_update(static_butter_t *f, float input)
-{
-    if (!f->valid) return input;
-
-    float x = input;
-    for (uint8_t i = 0; i < f->num_sections; i++) {
-        x = biquad_filter_update(&f->sections[i], x);
-    }
-    return x;
-}
-
-static void static_butter_reset(static_butter_t *f, float equilibrium)
-{
-    if (!f->valid) return;
-
-    float x = equilibrium;
-    for (uint8_t i = 0; i < f->num_sections; i++) {
-        biquad_filter_reset(&f->sections[i], x);
-        x = biquad_filter_get_output(&f->sections[i]);
-    }
-}
 
 /* ================================================================== */
 /*  Per-order update / reset (macro-generated)                          */
 /* ================================================================== */
 
 /* Lowpass */
-#define X(order, ns, ol) \
+#define X(ord, ns, ol) \
     float butter_lp_##ol##_update(butter_lp_##ol##_t *f, float input) { \
-        return static_butter_update((static_butter_t *)f, input); \
+        if (!f->valid) return input; \
+        return static_butter_update(f->sections, f->num_sections, input); \
     } \
     void butter_lp_##ol##_reset(butter_lp_##ol##_t *f, float equilibrium) { \
-        static_butter_reset((static_butter_t *)f, equilibrium); \
+        if (!f->valid) return; \
+        static_butter_reset(f->sections, f->num_sections, equilibrium); \
     }
 FOR_EACH_STATIC_BUTTER_LP_ORDER
 #undef X
 
 /* Highpass */
-#define X(order, ns, ol) \
+#define X(ord, ns, ol) \
     float butter_hp_##ol##_update(butter_hp_##ol##_t *f, float input) { \
-        return static_butter_update((static_butter_t *)f, input); \
+        if (!f->valid) return input; \
+        return static_butter_update(f->sections, f->num_sections, input); \
     } \
     void butter_hp_##ol##_reset(butter_hp_##ol##_t *f, float equilibrium) { \
-        static_butter_reset((static_butter_t *)f, equilibrium); \
+        if (!f->valid) return; \
+        static_butter_reset(f->sections, f->num_sections, equilibrium); \
     }
 FOR_EACH_STATIC_BUTTER_LP_ORDER
 #undef X
 
 /* Bandpass */
-#define X(order, ns, ol) \
+#define X(ord, ns, ol) \
     float butter_bp_##ol##_update(butter_bp_##ol##_t *f, float input) { \
-        return static_butter_update((static_butter_t *)f, input); \
+        if (!f->valid) return input; \
+        return static_butter_update(f->sections, f->num_sections, input); \
     } \
     void butter_bp_##ol##_reset(butter_bp_##ol##_t *f, float equilibrium) { \
-        static_butter_reset((static_butter_t *)f, equilibrium); \
+        if (!f->valid) return; \
+        static_butter_reset(f->sections, f->num_sections, equilibrium); \
     }
 FOR_EACH_STATIC_BUTTER_BP_ORDER
 #undef X
 
 /* Bandstop */
-#define X(order, ns, ol) \
+#define X(ord, ns, ol) \
     float butter_bs_##ol##_update(butter_bs_##ol##_t *f, float input) { \
-        return static_butter_update((static_butter_t *)f, input); \
+        if (!f->valid) return input; \
+        return static_butter_update(f->sections, f->num_sections, input); \
     } \
     void butter_bs_##ol##_reset(butter_bs_##ol##_t *f, float equilibrium) { \
-        static_butter_reset((static_butter_t *)f, equilibrium); \
+        if (!f->valid) return; \
+        static_butter_reset(f->sections, f->num_sections, equilibrium); \
     }
 FOR_EACH_STATIC_BUTTER_BP_ORDER
 #undef X

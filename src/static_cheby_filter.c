@@ -2,12 +2,6 @@
 #include <math.h>
 #include <string.h>
 
-/* Base type for internal casting — prefix matches all static Chebyshev structs. */
-typedef struct {
-    STATIC_CHEBY_FIELDS
-    biquad_filter_t sections[1];
-} static_cheby_t;
-
 /* ================================================================== */
 /*  Chebyshev prototypes (runtime computation — depend on ripple)      */
 /* ================================================================== */
@@ -73,7 +67,7 @@ static uint8_t cheby2_proto(complex_t *poles, complex_t *zeros, uint8_t n,
  *
  * @return Number of sections deployed, or 0 on failure.
  */
-static uint8_t cheby_design_static(biquad_filter_t *sections,
+static uint8_t static_cheby_design(biquad_filter_t *sections,
                                     uint8_t max_sections,
                                     uint8_t order, uint8_t type,
                                     float wc1, float wc2, float fs,
@@ -156,18 +150,13 @@ static uint8_t cheby_design_static(biquad_filter_t *sections,
 
 /* ── Chebyshev I ──────────────────────────────────────────────────── */
 
-static void cheby1_static_init_lp(static_cheby_t *f, uint8_t order,
-                                   float fc, float fs, float ripple_db)
+static uint8_t static_cheby1_lp_init(biquad_filter_t *sections,
+                                      uint8_t max_sections,
+                                      uint8_t order, float fc, float fs,
+                                      float ripple_db)
 {
-    f->valid     = 0;
-    f->type      = FILTER_LOWPASS;
-    f->order     = order;
-    f->fc1       = fc;
-    f->fc2       = 0.0f;
-    f->fs        = fs;
-    f->ripple_db = ripple_db;
-
-    if (order == 0 || fc <= 0.0f || fc >= fs * 0.5f || ripple_db <= 0.0f) return;
+    if (order == 0 || fc <= 0.0f || fc >= fs * 0.5f || ripple_db <= 0.0f)
+        return 0;
 
     float epsilon = sqrtf(powf(10.0f, ripple_db / 10.0f) - 1.0f);
     float wc = 2.0f * (float)M_PI * prewarp(fc, fs);
@@ -175,27 +164,19 @@ static void cheby1_static_init_lp(static_cheby_t *f, uint8_t order,
     complex_t poles[8];
     cheby1_proto(poles, order, epsilon);
 
-    uint8_t ns = cheby_design_static(f->sections, f->num_sections,
-                                      order, FILTER_LOWPASS,
-                                      wc, 0.0f, fs, 0.0f,
-                                      poles, order, 0, NULL);
-    if (ns == 0) return;
-    f->num_sections = ns;
-    f->valid = 1;
+    return static_cheby_design(sections, max_sections,
+                                order, FILTER_LOWPASS,
+                                wc, 0.0f, fs, 0.0f,
+                                poles, order, 0, NULL);
 }
 
-static void cheby1_static_init_hp(static_cheby_t *f, uint8_t order,
-                                   float fc, float fs, float ripple_db)
+static uint8_t static_cheby1_hp_init(biquad_filter_t *sections,
+                                      uint8_t max_sections,
+                                      uint8_t order, float fc, float fs,
+                                      float ripple_db)
 {
-    f->valid     = 0;
-    f->type      = FILTER_HIGHPASS;
-    f->order     = order;
-    f->fc1       = fc;
-    f->fc2       = 0.0f;
-    f->fs        = fs;
-    f->ripple_db = ripple_db;
-
-    if (order == 0 || fc <= 0.0f || fc >= fs * 0.5f || ripple_db <= 0.0f) return;
+    if (order == 0 || fc <= 0.0f || fc >= fs * 0.5f || ripple_db <= 0.0f)
+        return 0;
 
     float epsilon = sqrtf(powf(10.0f, ripple_db / 10.0f) - 1.0f);
     float wc = 2.0f * (float)M_PI * prewarp(fc, fs);
@@ -203,29 +184,21 @@ static void cheby1_static_init_hp(static_cheby_t *f, uint8_t order,
     complex_t poles[8];
     cheby1_proto(poles, order, epsilon);
 
-    uint8_t ns = cheby_design_static(f->sections, f->num_sections,
-                                      order, FILTER_HIGHPASS,
-                                      wc, 0.0f, fs, (float)M_PI,
-                                      poles, order, 0, NULL);
-    if (ns == 0) return;
-    f->num_sections = ns;
-    f->valid = 1;
+    return static_cheby_design(sections, max_sections,
+                                order, FILTER_HIGHPASS,
+                                wc, 0.0f, fs, (float)M_PI,
+                                poles, order, 0, NULL);
 }
 
-static void cheby1_static_init_bp(static_cheby_t *f, uint8_t order,
-                                   float fc1, float fc2, float fs,
-                                   float ripple_db)
+static uint8_t static_cheby1_bp_init(biquad_filter_t *sections,
+                                      uint8_t max_sections,
+                                      uint8_t order,
+                                      float fc1, float fc2, float fs,
+                                      float ripple_db)
 {
-    f->valid     = 0;
-    f->type      = FILTER_BANDPASS;
-    f->order     = order;
-    f->fc1       = fc1;
-    f->fc2       = fc2;
-    f->fs        = fs;
-    f->ripple_db = ripple_db;
-
-    if (order == 0 || fc1 <= 0.0f || fc1 >= fs * 0.5f || ripple_db <= 0.0f) return;
-    if (fc2 <= fc1 || fc2 >= fs * 0.5f) return;
+    if (order == 0 || fc1 <= 0.0f || fc1 >= fs * 0.5f || ripple_db <= 0.0f)
+        return 0;
+    if (fc2 <= fc1 || fc2 >= fs * 0.5f) return 0;
 
     float epsilon = sqrtf(powf(10.0f, ripple_db / 10.0f) - 1.0f);
     float wc1 = 2.0f * (float)M_PI * prewarp(fc1, fs);
@@ -235,29 +208,21 @@ static void cheby1_static_init_bp(static_cheby_t *f, uint8_t order,
     complex_t poles[8];
     cheby1_proto(poles, order, epsilon);
 
-    uint8_t ns = cheby_design_static(f->sections, f->num_sections,
-                                      order, FILTER_BANDPASS,
-                                      wc1, wc2, fs, w0_norm,
-                                      poles, order, 0, NULL);
-    if (ns == 0) return;
-    f->num_sections = ns;
-    f->valid = 1;
+    return static_cheby_design(sections, max_sections,
+                                order, FILTER_BANDPASS,
+                                wc1, wc2, fs, w0_norm,
+                                poles, order, 0, NULL);
 }
 
-static void cheby1_static_init_bs(static_cheby_t *f, uint8_t order,
-                                   float fc1, float fc2, float fs,
-                                   float ripple_db)
+static uint8_t static_cheby1_bs_init(biquad_filter_t *sections,
+                                      uint8_t max_sections,
+                                      uint8_t order,
+                                      float fc1, float fc2, float fs,
+                                      float ripple_db)
 {
-    f->valid     = 0;
-    f->type      = FILTER_BANDSTOP;
-    f->order     = order;
-    f->fc1       = fc1;
-    f->fc2       = fc2;
-    f->fs        = fs;
-    f->ripple_db = ripple_db;
-
-    if (order == 0 || fc1 <= 0.0f || fc1 >= fs * 0.5f || ripple_db <= 0.0f) return;
-    if (fc2 <= fc1 || fc2 >= fs * 0.5f) return;
+    if (order == 0 || fc1 <= 0.0f || fc1 >= fs * 0.5f || ripple_db <= 0.0f)
+        return 0;
+    if (fc2 <= fc1 || fc2 >= fs * 0.5f) return 0;
 
     float epsilon = sqrtf(powf(10.0f, ripple_db / 10.0f) - 1.0f);
     float wc1 = 2.0f * (float)M_PI * prewarp(fc1, fs);
@@ -266,29 +231,21 @@ static void cheby1_static_init_bs(static_cheby_t *f, uint8_t order,
     complex_t poles[8];
     cheby1_proto(poles, order, epsilon);
 
-    uint8_t ns = cheby_design_static(f->sections, f->num_sections,
-                                      order, FILTER_BANDSTOP,
-                                      wc1, wc2, fs, 0.0f,
-                                      poles, order, 0, NULL);
-    if (ns == 0) return;
-    f->num_sections = ns;
-    f->valid = 1;
+    return static_cheby_design(sections, max_sections,
+                                order, FILTER_BANDSTOP,
+                                wc1, wc2, fs, 0.0f,
+                                poles, order, 0, NULL);
 }
 
 /* ── Chebyshev II ─────────────────────────────────────────────────── */
 
-static void cheby2_static_init_lp(static_cheby_t *f, uint8_t order,
-                                   float fc, float fs, float ripple_db)
+static uint8_t static_cheby2_lp_init(biquad_filter_t *sections,
+                                      uint8_t max_sections,
+                                      uint8_t order, float fc, float fs,
+                                      float ripple_db)
 {
-    f->valid     = 0;
-    f->type      = FILTER_LOWPASS;
-    f->order     = order;
-    f->fc1       = fc;
-    f->fc2       = 0.0f;
-    f->fs        = fs;
-    f->ripple_db = ripple_db;
-
-    if (order == 0 || fc <= 0.0f || fc >= fs * 0.5f || ripple_db <= 0.0f) return;
+    if (order == 0 || fc <= 0.0f || fc >= fs * 0.5f || ripple_db <= 0.0f)
+        return 0;
 
     float epsilon = 1.0f / sqrtf(powf(10.0f, ripple_db / 10.0f) - 1.0f);
     float wc = 2.0f * (float)M_PI * prewarp(fc, fs);
@@ -296,27 +253,19 @@ static void cheby2_static_init_lp(static_cheby_t *f, uint8_t order,
     complex_t poles[8], zeros[8];
     uint8_t nz = cheby2_proto(poles, zeros, order, epsilon);
 
-    uint8_t ns = cheby_design_static(f->sections, f->num_sections,
-                                      order, FILTER_LOWPASS,
-                                      wc, 0.0f, fs, 0.0f,
-                                      poles, order, nz, zeros);
-    if (ns == 0) return;
-    f->num_sections = ns;
-    f->valid = 1;
+    return static_cheby_design(sections, max_sections,
+                                order, FILTER_LOWPASS,
+                                wc, 0.0f, fs, 0.0f,
+                                poles, order, nz, zeros);
 }
 
-static void cheby2_static_init_hp(static_cheby_t *f, uint8_t order,
-                                   float fc, float fs, float ripple_db)
+static uint8_t static_cheby2_hp_init(biquad_filter_t *sections,
+                                      uint8_t max_sections,
+                                      uint8_t order, float fc, float fs,
+                                      float ripple_db)
 {
-    f->valid     = 0;
-    f->type      = FILTER_HIGHPASS;
-    f->order     = order;
-    f->fc1       = fc;
-    f->fc2       = 0.0f;
-    f->fs        = fs;
-    f->ripple_db = ripple_db;
-
-    if (order == 0 || fc <= 0.0f || fc >= fs * 0.5f || ripple_db <= 0.0f) return;
+    if (order == 0 || fc <= 0.0f || fc >= fs * 0.5f || ripple_db <= 0.0f)
+        return 0;
 
     float epsilon = 1.0f / sqrtf(powf(10.0f, ripple_db / 10.0f) - 1.0f);
     float wc = 2.0f * (float)M_PI * prewarp(fc, fs);
@@ -324,29 +273,21 @@ static void cheby2_static_init_hp(static_cheby_t *f, uint8_t order,
     complex_t poles[8], zeros[8];
     uint8_t nz = cheby2_proto(poles, zeros, order, epsilon);
 
-    uint8_t ns = cheby_design_static(f->sections, f->num_sections,
-                                      order, FILTER_HIGHPASS,
-                                      wc, 0.0f, fs, (float)M_PI,
-                                      poles, order, nz, zeros);
-    if (ns == 0) return;
-    f->num_sections = ns;
-    f->valid = 1;
+    return static_cheby_design(sections, max_sections,
+                                order, FILTER_HIGHPASS,
+                                wc, 0.0f, fs, (float)M_PI,
+                                poles, order, nz, zeros);
 }
 
-static void cheby2_static_init_bp(static_cheby_t *f, uint8_t order,
-                                   float fc1, float fc2, float fs,
-                                   float ripple_db)
+static uint8_t static_cheby2_bp_init(biquad_filter_t *sections,
+                                      uint8_t max_sections,
+                                      uint8_t order,
+                                      float fc1, float fc2, float fs,
+                                      float ripple_db)
 {
-    f->valid     = 0;
-    f->type      = FILTER_BANDPASS;
-    f->order     = order;
-    f->fc1       = fc1;
-    f->fc2       = fc2;
-    f->fs        = fs;
-    f->ripple_db = ripple_db;
-
-    if (order == 0 || fc1 <= 0.0f || fc1 >= fs * 0.5f || ripple_db <= 0.0f) return;
-    if (fc2 <= fc1 || fc2 >= fs * 0.5f) return;
+    if (order == 0 || fc1 <= 0.0f || fc1 >= fs * 0.5f || ripple_db <= 0.0f)
+        return 0;
+    if (fc2 <= fc1 || fc2 >= fs * 0.5f) return 0;
 
     float epsilon = 1.0f / sqrtf(powf(10.0f, ripple_db / 10.0f) - 1.0f);
     float wc1 = 2.0f * (float)M_PI * prewarp(fc1, fs);
@@ -356,29 +297,21 @@ static void cheby2_static_init_bp(static_cheby_t *f, uint8_t order,
     complex_t poles[8], zeros[8];
     uint8_t nz = cheby2_proto(poles, zeros, order, epsilon);
 
-    uint8_t ns = cheby_design_static(f->sections, f->num_sections,
-                                      order, FILTER_BANDPASS,
-                                      wc1, wc2, fs, w0_norm,
-                                      poles, order, nz, zeros);
-    if (ns == 0) return;
-    f->num_sections = ns;
-    f->valid = 1;
+    return static_cheby_design(sections, max_sections,
+                                order, FILTER_BANDPASS,
+                                wc1, wc2, fs, w0_norm,
+                                poles, order, nz, zeros);
 }
 
-static void cheby2_static_init_bs(static_cheby_t *f, uint8_t order,
-                                   float fc1, float fc2, float fs,
-                                   float ripple_db)
+static uint8_t static_cheby2_bs_init(biquad_filter_t *sections,
+                                      uint8_t max_sections,
+                                      uint8_t order,
+                                      float fc1, float fc2, float fs,
+                                      float ripple_db)
 {
-    f->valid     = 0;
-    f->type      = FILTER_BANDSTOP;
-    f->order     = order;
-    f->fc1       = fc1;
-    f->fc2       = fc2;
-    f->fs        = fs;
-    f->ripple_db = ripple_db;
-
-    if (order == 0 || fc1 <= 0.0f || fc1 >= fs * 0.5f || ripple_db <= 0.0f) return;
-    if (fc2 <= fc1 || fc2 >= fs * 0.5f) return;
+    if (order == 0 || fc1 <= 0.0f || fc1 >= fs * 0.5f || ripple_db <= 0.0f)
+        return 0;
+    if (fc2 <= fc1 || fc2 >= fs * 0.5f) return 0;
 
     float epsilon = 1.0f / sqrtf(powf(10.0f, ripple_db / 10.0f) - 1.0f);
     float wc1 = 2.0f * (float)M_PI * prewarp(fc1, fs);
@@ -387,13 +320,34 @@ static void cheby2_static_init_bs(static_cheby_t *f, uint8_t order,
     complex_t poles[8], zeros[8];
     uint8_t nz = cheby2_proto(poles, zeros, order, epsilon);
 
-    uint8_t ns = cheby_design_static(f->sections, f->num_sections,
-                                      order, FILTER_BANDSTOP,
-                                      wc1, wc2, fs, 0.0f,
-                                      poles, order, nz, zeros);
-    if (ns == 0) return;
-    f->num_sections = ns;
-    f->valid = 1;
+    return static_cheby_design(sections, max_sections,
+                                order, FILTER_BANDSTOP,
+                                wc1, wc2, fs, 0.0f,
+                                poles, order, nz, zeros);
+}
+
+/* ================================================================== */
+/*  Internal helpers                                                    */
+/* ================================================================== */
+
+static float static_cheby_update(biquad_filter_t *sections,
+                                  uint8_t num_sections, float input)
+{
+    float x = input;
+    for (uint8_t i = 0; i < num_sections; i++) {
+        x = biquad_filter_update(&sections[i], x);
+    }
+    return x;
+}
+
+static void static_cheby_reset(biquad_filter_t *sections,
+                                uint8_t num_sections, float equilibrium)
+{
+    float x = equilibrium;
+    for (uint8_t i = 0; i < num_sections; i++) {
+        biquad_filter_reset(&sections[i], x);
+        x = biquad_filter_get_output(&sections[i]);
+    }
 }
 
 /* ================================================================== */
@@ -401,191 +355,253 @@ static void cheby2_static_init_bs(static_cheby_t *f, uint8_t order,
 /* ================================================================== */
 
 /* Chebyshev I — lowpass */
-#define X(order, ns, ol) \
+#define X(ord, ns, ol) \
     void cheby1_lp_##ol##_init(cheby1_lp_##ol##_t *f, float fc, float fs, float ripple_db) { \
-        f->num_sections = ns; \
-        cheby1_static_init_lp((static_cheby_t *)f, order, fc, fs, ripple_db); \
+        f->type = FILTER_LOWPASS; \
+        f->order = ord; \
+        f->fc1 = fc; \
+        f->fc2 = 0.0f; \
+        f->fs = fs; \
+        f->ripple_db = ripple_db; \
+        f->valid = 0; \
+        uint8_t n = static_cheby1_lp_init(f->sections, ns, ord, fc, fs, ripple_db); \
+        if (n == 0) return; \
+        f->num_sections = n; \
+        f->valid = 1; \
     }
 FOR_EACH_STATIC_CHEBY_LP_ORDER
 #undef X
 
 /* Chebyshev I — highpass */
-#define X(order, ns, ol) \
+#define X(ord, ns, ol) \
     void cheby1_hp_##ol##_init(cheby1_hp_##ol##_t *f, float fc, float fs, float ripple_db) { \
-        f->num_sections = ns; \
-        cheby1_static_init_hp((static_cheby_t *)f, order, fc, fs, ripple_db); \
+        f->type = FILTER_HIGHPASS; \
+        f->order = ord; \
+        f->fc1 = fc; \
+        f->fc2 = 0.0f; \
+        f->fs = fs; \
+        f->ripple_db = ripple_db; \
+        f->valid = 0; \
+        uint8_t n = static_cheby1_hp_init(f->sections, ns, ord, fc, fs, ripple_db); \
+        if (n == 0) return; \
+        f->num_sections = n; \
+        f->valid = 1; \
     }
 FOR_EACH_STATIC_CHEBY_LP_ORDER
 #undef X
 
 /* Chebyshev I — bandpass */
-#define X(order, ns, ol) \
+#define X(ord, ns, ol) \
     void cheby1_bp_##ol##_init(cheby1_bp_##ol##_t *f, float fc1, float fc2, float fs, float ripple_db) { \
-        f->num_sections = ns; \
-        cheby1_static_init_bp((static_cheby_t *)f, order, fc1, fc2, fs, ripple_db); \
+        f->type = FILTER_BANDPASS; \
+        f->order = ord; \
+        f->fc1 = fc1; \
+        f->fc2 = fc2; \
+        f->fs = fs; \
+        f->ripple_db = ripple_db; \
+        f->valid = 0; \
+        uint8_t n = static_cheby1_bp_init(f->sections, ns, ord, fc1, fc2, fs, ripple_db); \
+        if (n == 0) return; \
+        f->num_sections = n; \
+        f->valid = 1; \
     }
 FOR_EACH_STATIC_CHEBY_BP_ORDER
 #undef X
 
 /* Chebyshev I — bandstop */
-#define X(order, ns, ol) \
+#define X(ord, ns, ol) \
     void cheby1_bs_##ol##_init(cheby1_bs_##ol##_t *f, float fc1, float fc2, float fs, float ripple_db) { \
-        f->num_sections = ns; \
-        cheby1_static_init_bs((static_cheby_t *)f, order, fc1, fc2, fs, ripple_db); \
+        f->type = FILTER_BANDSTOP; \
+        f->order = ord; \
+        f->fc1 = fc1; \
+        f->fc2 = fc2; \
+        f->fs = fs; \
+        f->ripple_db = ripple_db; \
+        f->valid = 0; \
+        uint8_t n = static_cheby1_bs_init(f->sections, ns, ord, fc1, fc2, fs, ripple_db); \
+        if (n == 0) return; \
+        f->num_sections = n; \
+        f->valid = 1; \
     }
 FOR_EACH_STATIC_CHEBY_BP_ORDER
 #undef X
 
 /* Chebyshev II — lowpass */
-#define X(order, ns, ol) \
+#define X(ord, ns, ol) \
     void cheby2_lp_##ol##_init(cheby2_lp_##ol##_t *f, float fc, float fs, float ripple_db) { \
-        f->num_sections = ns; \
-        cheby2_static_init_lp((static_cheby_t *)f, order, fc, fs, ripple_db); \
+        f->type = FILTER_LOWPASS; \
+        f->order = ord; \
+        f->fc1 = fc; \
+        f->fc2 = 0.0f; \
+        f->fs = fs; \
+        f->ripple_db = ripple_db; \
+        f->valid = 0; \
+        uint8_t n = static_cheby2_lp_init(f->sections, ns, ord, fc, fs, ripple_db); \
+        if (n == 0) return; \
+        f->num_sections = n; \
+        f->valid = 1; \
     }
 FOR_EACH_STATIC_CHEBY_LP_ORDER
 #undef X
 
 /* Chebyshev II — highpass */
-#define X(order, ns, ol) \
+#define X(ord, ns, ol) \
     void cheby2_hp_##ol##_init(cheby2_hp_##ol##_t *f, float fc, float fs, float ripple_db) { \
-        f->num_sections = ns; \
-        cheby2_static_init_hp((static_cheby_t *)f, order, fc, fs, ripple_db); \
+        f->type = FILTER_HIGHPASS; \
+        f->order = ord; \
+        f->fc1 = fc; \
+        f->fc2 = 0.0f; \
+        f->fs = fs; \
+        f->ripple_db = ripple_db; \
+        f->valid = 0; \
+        uint8_t n = static_cheby2_hp_init(f->sections, ns, ord, fc, fs, ripple_db); \
+        if (n == 0) return; \
+        f->num_sections = n; \
+        f->valid = 1; \
     }
 FOR_EACH_STATIC_CHEBY_LP_ORDER
 #undef X
 
 /* Chebyshev II — bandpass */
-#define X(order, ns, ol) \
+#define X(ord, ns, ol) \
     void cheby2_bp_##ol##_init(cheby2_bp_##ol##_t *f, float fc1, float fc2, float fs, float ripple_db) { \
-        f->num_sections = ns; \
-        cheby2_static_init_bp((static_cheby_t *)f, order, fc1, fc2, fs, ripple_db); \
+        f->type = FILTER_BANDPASS; \
+        f->order = ord; \
+        f->fc1 = fc1; \
+        f->fc2 = fc2; \
+        f->fs = fs; \
+        f->ripple_db = ripple_db; \
+        f->valid = 0; \
+        uint8_t n = static_cheby2_bp_init(f->sections, ns, ord, fc1, fc2, fs, ripple_db); \
+        if (n == 0) return; \
+        f->num_sections = n; \
+        f->valid = 1; \
     }
 FOR_EACH_STATIC_CHEBY_BP_ORDER
 #undef X
 
 /* Chebyshev II — bandstop */
-#define X(order, ns, ol) \
+#define X(ord, ns, ol) \
     void cheby2_bs_##ol##_init(cheby2_bs_##ol##_t *f, float fc1, float fc2, float fs, float ripple_db) { \
-        f->num_sections = ns; \
-        cheby2_static_init_bs((static_cheby_t *)f, order, fc1, fc2, fs, ripple_db); \
+        f->type = FILTER_BANDSTOP; \
+        f->order = ord; \
+        f->fc1 = fc1; \
+        f->fc2 = fc2; \
+        f->fs = fs; \
+        f->ripple_db = ripple_db; \
+        f->valid = 0; \
+        uint8_t n = static_cheby2_bs_init(f->sections, ns, ord, fc1, fc2, fs, ripple_db); \
+        if (n == 0) return; \
+        f->num_sections = n; \
+        f->valid = 1; \
     }
 FOR_EACH_STATIC_CHEBY_BP_ORDER
 #undef X
-
-/* ================================================================== */
-/*  Internal helpers                                                    */
-/* ================================================================== */
-
-static float static_cheby_update(static_cheby_t *f, float input)
-{
-    if (!f->valid) return input;
-
-    float x = input;
-    for (uint8_t i = 0; i < f->num_sections; i++) {
-        x = biquad_filter_update(&f->sections[i], x);
-    }
-    return x;
-}
-
-static void static_cheby_reset(static_cheby_t *f, float equilibrium)
-{
-    if (!f->valid) return;
-
-    float x = equilibrium;
-    for (uint8_t i = 0; i < f->num_sections; i++) {
-        biquad_filter_reset(&f->sections[i], x);
-        x = biquad_filter_get_output(&f->sections[i]);
-    }
-}
 
 /* ================================================================== */
 /*  Per-order update / reset (macro-generated)                          */
 /* ================================================================== */
 
 /* Chebyshev I — lowpass */
-#define X(order, ns, ol) \
+#define X(ord, ns, ol) \
     float cheby1_lp_##ol##_update(cheby1_lp_##ol##_t *f, float input) { \
-        return static_cheby_update((static_cheby_t *)f, input); \
+        if (!f->valid) return input; \
+        return static_cheby_update(f->sections, f->num_sections, input); \
     } \
     void cheby1_lp_##ol##_reset(cheby1_lp_##ol##_t *f, float equilibrium) { \
-        static_cheby_reset((static_cheby_t *)f, equilibrium); \
+        if (!f->valid) return; \
+        static_cheby_reset(f->sections, f->num_sections, equilibrium); \
     }
 FOR_EACH_STATIC_CHEBY_LP_ORDER
 #undef X
 
 /* Chebyshev I — highpass */
-#define X(order, ns, ol) \
+#define X(ord, ns, ol) \
     float cheby1_hp_##ol##_update(cheby1_hp_##ol##_t *f, float input) { \
-        return static_cheby_update((static_cheby_t *)f, input); \
+        if (!f->valid) return input; \
+        return static_cheby_update(f->sections, f->num_sections, input); \
     } \
     void cheby1_hp_##ol##_reset(cheby1_hp_##ol##_t *f, float equilibrium) { \
-        static_cheby_reset((static_cheby_t *)f, equilibrium); \
+        if (!f->valid) return; \
+        static_cheby_reset(f->sections, f->num_sections, equilibrium); \
     }
 FOR_EACH_STATIC_CHEBY_LP_ORDER
 #undef X
 
 /* Chebyshev I — bandpass */
-#define X(order, ns, ol) \
+#define X(ord, ns, ol) \
     float cheby1_bp_##ol##_update(cheby1_bp_##ol##_t *f, float input) { \
-        return static_cheby_update((static_cheby_t *)f, input); \
+        if (!f->valid) return input; \
+        return static_cheby_update(f->sections, f->num_sections, input); \
     } \
     void cheby1_bp_##ol##_reset(cheby1_bp_##ol##_t *f, float equilibrium) { \
-        static_cheby_reset((static_cheby_t *)f, equilibrium); \
+        if (!f->valid) return; \
+        static_cheby_reset(f->sections, f->num_sections, equilibrium); \
     }
 FOR_EACH_STATIC_CHEBY_BP_ORDER
 #undef X
 
 /* Chebyshev I — bandstop */
-#define X(order, ns, ol) \
+#define X(ord, ns, ol) \
     float cheby1_bs_##ol##_update(cheby1_bs_##ol##_t *f, float input) { \
-        return static_cheby_update((static_cheby_t *)f, input); \
+        if (!f->valid) return input; \
+        return static_cheby_update(f->sections, f->num_sections, input); \
     } \
     void cheby1_bs_##ol##_reset(cheby1_bs_##ol##_t *f, float equilibrium) { \
-        static_cheby_reset((static_cheby_t *)f, equilibrium); \
+        if (!f->valid) return; \
+        static_cheby_reset(f->sections, f->num_sections, equilibrium); \
     }
 FOR_EACH_STATIC_CHEBY_BP_ORDER
 #undef X
 
 /* Chebyshev II — lowpass */
-#define X(order, ns, ol) \
+#define X(ord, ns, ol) \
     float cheby2_lp_##ol##_update(cheby2_lp_##ol##_t *f, float input) { \
-        return static_cheby_update((static_cheby_t *)f, input); \
+        if (!f->valid) return input; \
+        return static_cheby_update(f->sections, f->num_sections, input); \
     } \
     void cheby2_lp_##ol##_reset(cheby2_lp_##ol##_t *f, float equilibrium) { \
-        static_cheby_reset((static_cheby_t *)f, equilibrium); \
+        if (!f->valid) return; \
+        static_cheby_reset(f->sections, f->num_sections, equilibrium); \
     }
 FOR_EACH_STATIC_CHEBY_LP_ORDER
 #undef X
 
 /* Chebyshev II — highpass */
-#define X(order, ns, ol) \
+#define X(ord, ns, ol) \
     float cheby2_hp_##ol##_update(cheby2_hp_##ol##_t *f, float input) { \
-        return static_cheby_update((static_cheby_t *)f, input); \
+        if (!f->valid) return input; \
+        return static_cheby_update(f->sections, f->num_sections, input); \
     } \
     void cheby2_hp_##ol##_reset(cheby2_hp_##ol##_t *f, float equilibrium) { \
-        static_cheby_reset((static_cheby_t *)f, equilibrium); \
+        if (!f->valid) return; \
+        static_cheby_reset(f->sections, f->num_sections, equilibrium); \
     }
 FOR_EACH_STATIC_CHEBY_LP_ORDER
 #undef X
 
 /* Chebyshev II — bandpass */
-#define X(order, ns, ol) \
+#define X(ord, ns, ol) \
     float cheby2_bp_##ol##_update(cheby2_bp_##ol##_t *f, float input) { \
-        return static_cheby_update((static_cheby_t *)f, input); \
+        if (!f->valid) return input; \
+        return static_cheby_update(f->sections, f->num_sections, input); \
     } \
     void cheby2_bp_##ol##_reset(cheby2_bp_##ol##_t *f, float equilibrium) { \
-        static_cheby_reset((static_cheby_t *)f, equilibrium); \
+        if (!f->valid) return; \
+        static_cheby_reset(f->sections, f->num_sections, equilibrium); \
     }
 FOR_EACH_STATIC_CHEBY_BP_ORDER
 #undef X
 
 /* Chebyshev II — bandstop */
-#define X(order, ns, ol) \
+#define X(ord, ns, ol) \
     float cheby2_bs_##ol##_update(cheby2_bs_##ol##_t *f, float input) { \
-        return static_cheby_update((static_cheby_t *)f, input); \
+        if (!f->valid) return input; \
+        return static_cheby_update(f->sections, f->num_sections, input); \
     } \
     void cheby2_bs_##ol##_reset(cheby2_bs_##ol##_t *f, float equilibrium) { \
-        static_cheby_reset((static_cheby_t *)f, equilibrium); \
+        if (!f->valid) return; \
+        static_cheby_reset(f->sections, f->num_sections, equilibrium); \
     }
 FOR_EACH_STATIC_CHEBY_BP_ORDER
 #undef X
