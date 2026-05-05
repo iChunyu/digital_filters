@@ -115,24 +115,80 @@ void analog_bs_transform(complex_t *poles, uint8_t *np,
                          float w0, float xi);
 
 /**
+ * @brief Compute the gain adjustment for an analog LP→LP frequency transform.
+ *
+ * k_lp = k * wo^degree  (scipy lp2lp_zpk convention).
+ *
+ * @param k       Current system gain.
+ * @param wo      Target cutoff angular frequency (rad/s).
+ * @param degree  Relative degree = np − nz (number of excess poles).
+ * @return        Adjusted gain.
+ */
+float zpk_lp_gain(float k, float wo, uint8_t degree);
+
+/**
+ * @brief Compute the gain adjustment for an analog LP→HP or LP→BS transform.
+ *
+ * k = k · Re(∏(−z) / ∏(−p))  evaluated on the prototype (pre-transform)
+ * poles and zeros.  When nz = 0 the empty product ∏(−z) is 1.
+ *
+ * @param k   Current system gain.
+ * @param z   Prototype zeros (pre-transform), nz elements.
+ * @param nz  Number of prototype zeros.
+ * @param p   Prototype poles (pre-transform), np elements.
+ * @param np  Number of prototype poles.
+ * @return    Adjusted gain.
+ */
+float zpk_hp_bs_gain(float k, const complex_t *z, uint8_t nz,
+                     const complex_t *p, uint8_t np);
+
+/**
+ * @brief Compute the gain adjustment for an analog LP→BP frequency transform.
+ *
+ * k_bp = k * bw^degree  (scipy lp2bp_zpk convention).
+ *
+ * @param k       Current system gain.
+ * @param bw      Bandwidth ξ (rad/s).
+ * @param degree  Relative degree = np − nz.
+ * @return        Adjusted gain.
+ */
+float zpk_bp_gain(float k, float bw, uint8_t degree);
+
+/**
+ * @brief Compute the gain adjustment for the bilinear transform.
+ *
+ * k_z = k · Re(∏(K − z) / ∏(K − p))  where K = 2·fs and z,p are the
+ * analog-domain (s-plane) zeros and poles BEFORE the bilinear substitution.
+ *
+ * @param k   Current system gain.
+ * @param z   Analog-domain zeros, nz elements.
+ * @param nz  Number of analog zeros.
+ * @param p   Analog-domain poles, np elements.
+ * @param np  Number of analog poles.
+ * @param K   Bilinear constant = 2·fs.
+ * @return    Adjusted gain.
+ */
+float bilinear_zpk_gain(float k, const complex_t *z, uint8_t nz,
+                         const complex_t *p, uint8_t np, float K);
+
+/**
  * @brief Convert z-domain pole/zero arrays to second-order section coefficients.
  *
  * Pairs poles with nearest zeros using the "most unfavorable pole first"
- * algorithm, produces biquad coefficients, and normalises each section for
- * unity gain at the frequency given by @p w0_norm.
+ * algorithm and produces biquad coefficients.  Each section is built with
+ * unity numerator gain; the global system gain @p k is applied to the
+ * numerator of the first section only (matching scipy zpk2sos convention).
  *
  * @param[in]  zeros    Array of n z-domain zeros.
  * @param[in]  poles    Array of n z-domain poles.
  * @param[in]  n        Number of poles (must equal number of zeros).
  * @param[out] sos      SOS matrix with ceil(n/2) rows, each [b0,b1,b2, 1,a1,a2].
  *                      Caller must allocate ceil(n/2) rows.
- * @param[in]  w0_norm  Digital angular frequency (rad/sample) for unity-gain
- *                      normalisation: 0 = DC (LP, BS), π = Nyquist (HP),
- *                      2π·f₀/fs = centre frequency (BP).
+ * @param[in]  k        Overall system gain applied to sos[0] numerator.
  * @return              Number of SOS sections = ceil(n/2).
  */
 uint8_t zpk2sos(const complex_t *zeros, const complex_t *poles, uint8_t n,
-                float (*sos)[6], float w0_norm);
+                float (*sos)[6], float k);
 
 #ifdef __cplusplus
 }

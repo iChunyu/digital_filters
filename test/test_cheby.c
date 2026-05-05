@@ -28,7 +28,7 @@ int main(void)
 
     cheby1_reset(&c1, 1.0f);
     y = cheby1_update(&c1, 1.0f);
-    CHECK(CLOSE(y, 1.0f, 1e-4f), "cheby1 LP DC gain ~ 1");
+    CHECK(CLOSE(y, 0.891251f, 1e-4f), "cheby1 LP DC gain ~ -1 dB (even order)");
 
     cheby1_destroy(&c1);
     CHECK(c1.valid == 0, "cheby1 valid cleared");
@@ -117,7 +117,7 @@ int main(void)
 
     cheby1_reset(&c1bs, 1.0f);
     y = cheby1_update(&c1bs, 1.0f);
-    CHECK(CLOSE(y, 1.0f, 1e-4f), "cheby1 BS DC gain ~ 1");
+    CHECK(CLOSE(y, 0.891251f, 1e-4f), "cheby1 BS DC gain ~ -1 dB (even order)");
 
     cheby1_destroy(&c1bs);
 

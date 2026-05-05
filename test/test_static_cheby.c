@@ -28,7 +28,7 @@ int main(void)
 
     cheby1_lp_2nd_reset(&c1, 1.0f);
     y = cheby1_lp_2nd_update(&c1, 1.0f);
-    CHECK(CLOSE(y, 1.0f, 1e-4f), "cheby1 LP 2nd DC gain ~ 1");
+    CHECK(CLOSE(y, 0.891251f, 1e-4f), "cheby1 LP 2nd DC gain ~ -1 dB (even order)");
 
     /* ── Chebyshev I LP 3rd order (odd → 2 sections) ──────────────────── */
 
@@ -104,7 +104,7 @@ int main(void)
 
     cheby1_bs_2nd_reset(&c1bs, 1.0f);
     y = cheby1_bs_2nd_update(&c1bs, 1.0f);
-    CHECK(CLOSE(y, 1.0f, 1e-4f), "cheby1 BS 2nd DC gain ~ 1");
+    CHECK(CLOSE(y, 0.891251f, 1e-4f), "cheby1 BS 2nd DC gain ~ -1 dB (even order)");
 
     /* ── Chebyshev II HP 2nd order ────────────────────────────────────── */
 

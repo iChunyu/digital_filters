@@ -65,19 +65,21 @@ static uint8_t cheby2_proto(complex_t *poles, complex_t *zeros, uint8_t n,
  * For Chebyshev I:  pass nz = 0 (prototype has no finite zeros).
  * For Chebyshev II: pass nz = cheby2 finite-zero count.
  *
+ * @param k  Prototype gain (prod(-p) for cheby1, prod(-p)/prod(-z) for cheby2).
  * @return Number of sections deployed, or 0 on failure.
  */
 static uint8_t static_cheby_design(biquad_filter_t *sections,
                                     uint8_t max_sections,
                                     uint8_t order, uint8_t type,
                                     float wc1, float wc2, float fs,
-                                    float w0_norm,
+                                    float k,
                                     const complex_t *proto_poles,
                                     uint8_t np, uint8_t nz,
                                     const complex_t *proto_zeros)
 {
     complex_t poles[STATIC_CHEBY_MAX_NP];
     complex_t zeros[STATIC_CHEBY_MAX_NP];
+    uint8_t degree = np - nz; /* prototype relative degree */
 
     memcpy(poles, proto_poles, (size_t)np * sizeof(complex_t));
     if (nz > 0 && proto_zeros != NULL) {
@@ -88,8 +90,10 @@ static uint8_t static_cheby_design(biquad_filter_t *sections,
     switch (type) {
     case FILTER_LOWPASS:
         analog_lp_transform(poles, np, zeros, nz, wc1);
+        k = zpk_lp_gain(k, wc1, degree);
         break;
     case FILTER_HIGHPASS:
+        k = zpk_hp_bs_gain(k, zeros, nz, poles, np);
         analog_hp_transform(poles, np, zeros, nz, wc1);
         for (uint8_t i = nz; i < np; i++) {
             zeros[i].re = 0.0f;
@@ -101,11 +105,13 @@ static uint8_t static_cheby_design(biquad_filter_t *sections,
         float w0 = sqrtf(wc1 * wc2);
         float xi = wc2 - wc1;
         analog_bp_transform(poles, &np, zeros, &nz, w0, xi);
+        k = zpk_bp_gain(k, xi, degree);
         break;
     }
     case FILTER_BANDSTOP: {
         float w0 = sqrtf(wc1 * wc2);
         float xi = wc2 - wc1;
+        k = zpk_hp_bs_gain(k, zeros, nz, poles, np);
         analog_bs_transform(poles, &np, zeros, &nz, w0, xi);
         break;
     }
@@ -113,11 +119,20 @@ static uint8_t static_cheby_design(biquad_filter_t *sections,
         return 0;
     }
 
-    /* 2. Bilinear transform: s → z */
+    /* 2. Bilinear gain (on s-domain zp). */
+    {
+        complex_t z_analog[STATIC_CHEBY_MAX_NP];
+        complex_t p_analog[STATIC_CHEBY_MAX_NP];
+        memcpy(z_analog, zeros, (size_t)nz * sizeof(complex_t));
+        memcpy(p_analog, poles, (size_t)np * sizeof(complex_t));
+        k = bilinear_zpk_gain(k, z_analog, nz, p_analog, np, 2.0f * fs);
+    }
+
+    /* 3. Bilinear transform: s → z */
     bilinear_transform(poles, np, fs);
     bilinear_transform(zeros, nz, fs);
 
-    /* 3. Zero-pad: prototype zeros at s=∞ → z = -1 (not for BS). */
+    /* 4. Zero-pad: prototype zeros at s=∞ → z = -1 (not for BS). */
     if (type != FILTER_BANDSTOP) {
         for (uint8_t i = nz; i < np; i++) {
             zeros[i].re = -1.0f;
@@ -126,12 +141,12 @@ static uint8_t static_cheby_design(biquad_filter_t *sections,
         nz = np;
     }
 
-    /* 4. Pair poles and zeros → SOS coefficients. */
+    /* 5. Pair poles and zeros → SOS coefficients. */
     uint8_t ns = (np + 1) / 2;
     if (ns > max_sections) return 0;
 
     float sos[STATIC_CHEBY_MAX_NS][6];
-    uint8_t n_sections = zpk2sos(zeros, poles, np, sos, w0_norm);
+    uint8_t n_sections = zpk2sos(zeros, poles, np, sos, k);
     if (n_sections > max_sections) return 0;
 
     /* 5. Deploy to biquad sections. */
@@ -164,9 +179,12 @@ static uint8_t static_cheby1_lp_init(biquad_filter_t *sections,
     complex_t poles[8];
     cheby1_proto(poles, order, epsilon);
 
+    float k = 1.0f / zpk_hp_bs_gain(1.0f, NULL, 0, poles, order);
+    if (order % 2 == 0) k /= sqrtf(1.0f + epsilon * epsilon);
+
     return static_cheby_design(sections, max_sections,
                                 order, FILTER_LOWPASS,
-                                wc, 0.0f, fs, 0.0f,
+                                wc, 0.0f, fs, k,
                                 poles, order, 0, NULL);
 }
 
@@ -184,9 +202,12 @@ static uint8_t static_cheby1_hp_init(biquad_filter_t *sections,
     complex_t poles[8];
     cheby1_proto(poles, order, epsilon);
 
+    float k = 1.0f / zpk_hp_bs_gain(1.0f, NULL, 0, poles, order);
+    if (order % 2 == 0) k /= sqrtf(1.0f + epsilon * epsilon);
+
     return static_cheby_design(sections, max_sections,
                                 order, FILTER_HIGHPASS,
-                                wc, 0.0f, fs, (float)M_PI,
+                                wc, 0.0f, fs, k,
                                 poles, order, 0, NULL);
 }
 
@@ -203,14 +224,16 @@ static uint8_t static_cheby1_bp_init(biquad_filter_t *sections,
     float epsilon = sqrtf(powf(10.0f, ripple_db / 10.0f) - 1.0f);
     float wc1 = 2.0f * (float)M_PI * prewarp(fc1, fs);
     float wc2 = 2.0f * (float)M_PI * prewarp(fc2, fs);
-    float w0_norm = 2.0f * (float)M_PI * sqrtf(fc1 * fc2) / fs;
 
     complex_t poles[8];
     cheby1_proto(poles, order, epsilon);
 
+    float k = 1.0f / zpk_hp_bs_gain(1.0f, NULL, 0, poles, order);
+    if (order % 2 == 0) k /= sqrtf(1.0f + epsilon * epsilon);
+
     return static_cheby_design(sections, max_sections,
                                 order, FILTER_BANDPASS,
-                                wc1, wc2, fs, w0_norm,
+                                wc1, wc2, fs, k,
                                 poles, order, 0, NULL);
 }
 
@@ -231,9 +254,12 @@ static uint8_t static_cheby1_bs_init(biquad_filter_t *sections,
     complex_t poles[8];
     cheby1_proto(poles, order, epsilon);
 
+    float k = 1.0f / zpk_hp_bs_gain(1.0f, NULL, 0, poles, order);
+    if (order % 2 == 0) k /= sqrtf(1.0f + epsilon * epsilon);
+
     return static_cheby_design(sections, max_sections,
                                 order, FILTER_BANDSTOP,
-                                wc1, wc2, fs, 0.0f,
+                                wc1, wc2, fs, k,
                                 poles, order, 0, NULL);
 }
 
@@ -253,9 +279,11 @@ static uint8_t static_cheby2_lp_init(biquad_filter_t *sections,
     complex_t poles[8], zeros[8];
     uint8_t nz = cheby2_proto(poles, zeros, order, epsilon);
 
+    float k = 1.0f / zpk_hp_bs_gain(1.0f, zeros, nz, poles, order);
+
     return static_cheby_design(sections, max_sections,
                                 order, FILTER_LOWPASS,
-                                wc, 0.0f, fs, 0.0f,
+                                wc, 0.0f, fs, k,
                                 poles, order, nz, zeros);
 }
 
@@ -273,9 +301,11 @@ static uint8_t static_cheby2_hp_init(biquad_filter_t *sections,
     complex_t poles[8], zeros[8];
     uint8_t nz = cheby2_proto(poles, zeros, order, epsilon);
 
+    float k = 1.0f / zpk_hp_bs_gain(1.0f, zeros, nz, poles, order);
+
     return static_cheby_design(sections, max_sections,
                                 order, FILTER_HIGHPASS,
-                                wc, 0.0f, fs, (float)M_PI,
+                                wc, 0.0f, fs, k,
                                 poles, order, nz, zeros);
 }
 
@@ -292,14 +322,15 @@ static uint8_t static_cheby2_bp_init(biquad_filter_t *sections,
     float epsilon = 1.0f / sqrtf(powf(10.0f, ripple_db / 10.0f) - 1.0f);
     float wc1 = 2.0f * (float)M_PI * prewarp(fc1, fs);
     float wc2 = 2.0f * (float)M_PI * prewarp(fc2, fs);
-    float w0_norm = 2.0f * (float)M_PI * sqrtf(fc1 * fc2) / fs;
 
     complex_t poles[8], zeros[8];
     uint8_t nz = cheby2_proto(poles, zeros, order, epsilon);
 
+    float k = 1.0f / zpk_hp_bs_gain(1.0f, zeros, nz, poles, order);
+
     return static_cheby_design(sections, max_sections,
                                 order, FILTER_BANDPASS,
-                                wc1, wc2, fs, w0_norm,
+                                wc1, wc2, fs, k,
                                 poles, order, nz, zeros);
 }
 
@@ -320,9 +351,11 @@ static uint8_t static_cheby2_bs_init(biquad_filter_t *sections,
     complex_t poles[8], zeros[8];
     uint8_t nz = cheby2_proto(poles, zeros, order, epsilon);
 
+    float k = 1.0f / zpk_hp_bs_gain(1.0f, zeros, nz, poles, order);
+
     return static_cheby_design(sections, max_sections,
                                 order, FILTER_BANDSTOP,
-                                wc1, wc2, fs, 0.0f,
+                                wc1, wc2, fs, k,
                                 poles, order, nz, zeros);
 }
 

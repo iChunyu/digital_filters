@@ -296,44 +296,74 @@ static void make_biquad(const complex_t *p1, const complex_t *p2,
     b[2] = z1->re * z2->re - z1->im * z2->im;
 }
 
-/* Normalise b coefs for unity gain at digital frequency w0 (rad/sample).
-   w0 = 0 → DC (z=1), w0 = π → Nyquist (z=-1), otherwise general z=e^{j·w0}. */
-static void norm_gain(float *b, const float *a, float w0)
+/* Complex multiply: r = a * b. */
+static void c_mul(float *rr, float *ri, float ar, float ai, float br, float bi)
 {
-    float gain_num, gain_den;
+    *rr = ar * br - ai * bi;
+    *ri = ar * bi + ai * br;
+}
 
-    if (fabsf(w0) < 1e-12f) {
-        /* DC (z = 1) — LP, BS */
-        gain_num = b[0] + b[1] + b[2];
-        gain_den = 1.0f + a[0] + a[1];
-    } else if (fabsf(w0 - (float)M_PI) < 1e-12f) {
-        /* Nyquist (z = -1) — HP */
-        gain_num = b[0] - b[1] + b[2];
-        gain_den = 1.0f - a[0] + a[1];
-    } else {
-        /* General frequency z = e^{j·w0} — BP centre frequency */
-        float c1 = cosf(w0);
-        float s1 = sinf(w0);
-        float c2 = cosf(2.0f * w0);
-        float s2 = sinf(2.0f * w0);
+/* Complex divide: r = a / b  (b ≠ 0). */
+static void c_div(float *rr, float *ri, float ar, float ai, float br, float bi)
+{
+    float den = br * br + bi * bi;
+    *rr = (ar * br + ai * bi) / den;
+    *ri = (ai * br - ar * bi) / den;
+}
 
-        float num_re = b[0] + b[1] * c1 + b[2] * c2;
-        float num_im =      - b[1] * s1 - b[2] * s2;
-        float den_re = 1.0f + a[0] * c1 + a[1] * c2;
-        float den_im =      - a[0] * s1 - a[1] * s2;
+/* ================================================================== */
+/*  ZPK gain helpers (mirrors scipy zpk gain tracking)                */
+/* ================================================================== */
 
-        gain_num = sqrtf(num_re * num_re + num_im * num_im);
-        gain_den = sqrtf(den_re * den_re + den_im * den_im);
+float zpk_lp_gain(float k, float wo, uint8_t degree)
+{
+    float result = k;
+    for (uint8_t i = 0; i < degree; i++)
+        result *= wo;
+    return result;
+}
+
+float zpk_hp_bs_gain(float k, const complex_t *z, uint8_t nz,
+                     const complex_t *p, uint8_t np)
+{
+    /* Compute k * ∏(−z_i) / ∏(−p_i) incrementally to avoid overflow. */
+    float rr = k, ri = 0.0f;
+    uint8_t i;
+    for (i = 0; i < nz && i < np; i++) {
+        /* Multiply by (-z[i]), divide by (-p[i]). */
+        c_mul(&rr, &ri, rr, ri, -z[i].re, -z[i].im);
+        c_div(&rr, &ri, rr, ri, -p[i].re, -p[i].im);
     }
+    for (; i < nz; i++)
+        c_mul(&rr, &ri, rr, ri, -z[i].re, -z[i].im);
+    for (; i < np; i++)
+        c_div(&rr, &ri, rr, ri, -p[i].re, -p[i].im);
+    return rr; /* imaginary part cancels for conjugate pairs */
+}
 
-    if (fabsf(gain_num) < 1e-12f || fabsf(gain_den) < 1e-12f) {
-        return; /* degenerate — leave as-is */
+float zpk_bp_gain(float k, float bw, uint8_t degree)
+{
+    float result = k;
+    for (uint8_t i = 0; i < degree; i++)
+        result *= bw;
+    return result;
+}
+
+float bilinear_zpk_gain(float k, const complex_t *z, uint8_t nz,
+                         const complex_t *p, uint8_t np, float K)
+{
+    /* Compute k * ∏(K−z_i) / ∏(K−p_i) incrementally to avoid overflow. */
+    float rr = k, ri = 0.0f;
+    uint8_t i;
+    for (i = 0; i < nz && i < np; i++) {
+        c_mul(&rr, &ri, rr, ri, K - z[i].re, -z[i].im);
+        c_div(&rr, &ri, rr, ri, K - p[i].re, -p[i].im);
     }
-
-    float inv_gain = gain_den / gain_num;
-    b[0] *= inv_gain;
-    b[1] *= inv_gain;
-    b[2] *= inv_gain;
+    for (; i < nz; i++)
+        c_mul(&rr, &ri, rr, ri, K - z[i].re, -z[i].im);
+    for (; i < np; i++)
+        c_div(&rr, &ri, rr, ri, K - p[i].re, -p[i].im);
+    return rr;
 }
 
 /* Find index of the pole closest to the unit circle (largest magnitude). */
@@ -410,7 +440,7 @@ static void claim_conjugate(const complex_t *arr, uint8_t *used, uint8_t n,
 }
 
 uint8_t zpk2sos(const complex_t *zeros, const complex_t *poles, uint8_t n,
-                float (*sos)[6], float w0)
+                float (*sos)[6], float k)
 {
     if (n == 0) return 0;
 
@@ -458,8 +488,6 @@ uint8_t zpk2sos(const complex_t *zeros, const complex_t *poles, uint8_t n,
 
                 float b[3] = {1.0f, -z1.re, 0.0f};
                 float a[2] = {-p1.re, 0.0f};
-
-                norm_gain(b, a, w0);
 
                 sos[section][0] = b[0];
                 sos[section][1] = b[1];
@@ -522,8 +550,6 @@ uint8_t zpk2sos(const complex_t *zeros, const complex_t *poles, uint8_t n,
         float b[3], a[2];
         make_biquad(&p1, &p2, &z1, &z2, b, a);
 
-        norm_gain(b, a, w0);
-
         sos[section][0] = b[0];
         sos[section][1] = b[1];
         sos[section][2] = b[2];
@@ -541,6 +567,11 @@ uint8_t zpk2sos(const complex_t *zeros, const complex_t *poles, uint8_t n,
             sos[section - 1 - i][j] = tmp;
         }
     }
+
+    /* 5. Apply overall system gain to the first section numerator. */
+    sos[0][0] *= k;
+    sos[0][1] *= k;
+    sos[0][2] *= k;
 
     return section;
 }

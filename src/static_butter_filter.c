@@ -73,19 +73,18 @@ static const complex_t butter_proto[8][8] = {
  * @param wc1           Pre-warped lower cutoff rad/s (2π·prewarp(fc, fs)).
  * @param wc2           Pre-warped upper cutoff rad/s for BP/BS (unused for LP/HP).
  * @param fs            Sampling frequency in Hz.
- * @param w0_norm       Digital normalisation frequency (rad/sample).
  * @return              Number of sections deployed, or 0 on failure.
  */
 static uint8_t static_butter_design(biquad_filter_t *sections,
                                      uint8_t max_sections,
                                      uint8_t order, uint8_t type,
-                                     float wc1, float wc2, float fs,
-                                     float w0_norm)
+                                     float wc1, float wc2, float fs)
 {
     complex_t poles[STATIC_BUTTER_MAX_NP];
     complex_t zeros[STATIC_BUTTER_MAX_NP];
     uint8_t np = order;
     uint8_t nz = 0;
+    float k = 1.0f; /* Butterworth prototype gain */
 
     /* 1. Copy prototype poles from pre-computed table */
     memcpy(poles, butter_proto[order - 1], (size_t)order * sizeof(complex_t));
@@ -94,8 +93,10 @@ static uint8_t static_butter_design(biquad_filter_t *sections,
     switch (type) {
     case FILTER_LOWPASS:
         analog_lp_transform(poles, np, zeros, nz, wc1);
+        k = zpk_lp_gain(k, wc1, order);
         break;
     case FILTER_HIGHPASS:
+        k = zpk_hp_bs_gain(k, zeros, nz, poles, np);
         analog_hp_transform(poles, np, zeros, nz, wc1);
         for (uint8_t i = nz; i < np; i++) {
             zeros[i].re = 0.0f;
@@ -107,11 +108,13 @@ static uint8_t static_butter_design(biquad_filter_t *sections,
         float w0 = sqrtf(wc1 * wc2);
         float xi = wc2 - wc1;
         analog_bp_transform(poles, &np, zeros, &nz, w0, xi);
+        k = zpk_bp_gain(k, xi, order);
         break;
     }
     case FILTER_BANDSTOP: {
         float w0 = sqrtf(wc1 * wc2);
         float xi = wc2 - wc1;
+        k = zpk_hp_bs_gain(k, zeros, nz, poles, np);
         analog_bs_transform(poles, &np, zeros, &nz, w0, xi);
         break;
     }
@@ -119,11 +122,20 @@ static uint8_t static_butter_design(biquad_filter_t *sections,
         return 0;
     }
 
-    /* 3. Bilinear transform: s → z */
+    /* 3. Bilinear gain (on s-domain zp). */
+    {
+        complex_t z_analog[STATIC_BUTTER_MAX_NP];
+        complex_t p_analog[STATIC_BUTTER_MAX_NP];
+        memcpy(z_analog, zeros, (size_t)nz * sizeof(complex_t));
+        memcpy(p_analog, poles, (size_t)np * sizeof(complex_t));
+        k = bilinear_zpk_gain(k, z_analog, nz, p_analog, np, 2.0f * fs);
+    }
+
+    /* 4. Bilinear transform: s → z */
     bilinear_transform(poles, np, fs);
     bilinear_transform(zeros, nz, fs);
 
-    /* 4. Zero-pad: prototype zeros at s=∞ → z = -1 (not for BS). */
+    /* 5. Zero-pad: prototype zeros at s=∞ → z = -1 (not for BS). */
     if (type != FILTER_BANDSTOP) {
         for (uint8_t i = nz; i < np; i++) {
             zeros[i].re = -1.0f;
@@ -132,12 +144,12 @@ static uint8_t static_butter_design(biquad_filter_t *sections,
         nz = np;
     }
 
-    /* 5. Pair poles and zeros → SOS coefficients. */
+    /* 6. Pair poles and zeros → SOS coefficients. */
     uint8_t ns = (np + 1) / 2;
     if (ns > max_sections) return 0;
 
     float sos[STATIC_BUTTER_MAX_NS][6];
-    uint8_t n_sections = zpk2sos(zeros, poles, np, sos, w0_norm);
+    uint8_t n_sections = zpk2sos(zeros, poles, np, sos, k);
     if (n_sections > max_sections) return 0;
 
     /* 6. Deploy to biquad sections. */
@@ -163,7 +175,7 @@ static uint8_t static_butter_lp_init(biquad_filter_t *sections,
     float wc = 2.0f * (float)M_PI * prewarp(fc, fs);
     return static_butter_design(sections, max_sections,
                                  order, FILTER_LOWPASS,
-                                 wc, 0.0f, fs, 0.0f);
+                                 wc, 0.0f, fs);
 }
 
 static uint8_t static_butter_hp_init(biquad_filter_t *sections,
@@ -175,7 +187,7 @@ static uint8_t static_butter_hp_init(biquad_filter_t *sections,
     float wc = 2.0f * (float)M_PI * prewarp(fc, fs);
     return static_butter_design(sections, max_sections,
                                  order, FILTER_HIGHPASS,
-                                 wc, 0.0f, fs, (float)M_PI);
+                                 wc, 0.0f, fs);
 }
 
 static uint8_t static_butter_bp_init(biquad_filter_t *sections,
@@ -188,11 +200,10 @@ static uint8_t static_butter_bp_init(biquad_filter_t *sections,
 
     float wc1 = 2.0f * (float)M_PI * prewarp(fc1, fs);
     float wc2 = 2.0f * (float)M_PI * prewarp(fc2, fs);
-    float w0_norm = 2.0f * (float)M_PI * sqrtf(fc1 * fc2) / fs;
 
     return static_butter_design(sections, max_sections,
                                  order, FILTER_BANDPASS,
-                                 wc1, wc2, fs, w0_norm);
+                                 wc1, wc2, fs);
 }
 
 static uint8_t static_butter_bs_init(biquad_filter_t *sections,
@@ -208,7 +219,7 @@ static uint8_t static_butter_bs_init(biquad_filter_t *sections,
 
     return static_butter_design(sections, max_sections,
                                  order, FILTER_BANDSTOP,
-                                 wc1, wc2, fs, 0.0f);
+                                 wc1, wc2, fs);
 }
 
 /* ================================================================== */
