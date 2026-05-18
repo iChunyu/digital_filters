@@ -149,7 +149,7 @@ static uint8_t static_cheby_design(biquad_filter_t *sections,
     uint8_t n_sections = zpk2sos(zeros, poles, np, sos, k);
     if (n_sections > max_sections) return 0;
 
-    /* 5. Deploy to biquad sections. */
+    /* 6. Deploy to biquad sections. */
     for (uint8_t i = 0; i < n_sections; i++) {
         float num[3] = {sos[i][0], sos[i][1], sos[i][2]};
         float den[3] = {sos[i][3], sos[i][4], sos[i][5]};

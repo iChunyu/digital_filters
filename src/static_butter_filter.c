@@ -170,7 +170,8 @@ static uint8_t static_butter_lp_init(biquad_filter_t *sections,
                                       uint8_t max_sections,
                                       uint8_t order, float fc, float fs)
 {
-    if (order == 0 || fc <= 0.0f || fc >= fs * 0.5f) return 0;
+    if (order == 0 || order > 8 || fc <= 0.0f || fc >= fs * 0.5f)
+        return 0;
 
     float wc = 2.0f * (float)M_PI * prewarp(fc, fs);
     return static_butter_design(sections, max_sections,
@@ -182,7 +183,8 @@ static uint8_t static_butter_hp_init(biquad_filter_t *sections,
                                       uint8_t max_sections,
                                       uint8_t order, float fc, float fs)
 {
-    if (order == 0 || fc <= 0.0f || fc >= fs * 0.5f) return 0;
+    if (order == 0 || order > 8 || fc <= 0.0f || fc >= fs * 0.5f)
+        return 0;
 
     float wc = 2.0f * (float)M_PI * prewarp(fc, fs);
     return static_butter_design(sections, max_sections,
@@ -195,7 +197,8 @@ static uint8_t static_butter_bp_init(biquad_filter_t *sections,
                                       uint8_t order,
                                       float fc1, float fc2, float fs)
 {
-    if (order == 0 || fc1 <= 0.0f || fc1 >= fs * 0.5f) return 0;
+    if (order == 0 || order > 8 || fc1 <= 0.0f || fc1 >= fs * 0.5f)
+        return 0;
     if (fc2 <= fc1 || fc2 >= fs * 0.5f) return 0;
 
     float wc1 = 2.0f * (float)M_PI * prewarp(fc1, fs);
@@ -211,7 +214,8 @@ static uint8_t static_butter_bs_init(biquad_filter_t *sections,
                                       uint8_t order,
                                       float fc1, float fc2, float fs)
 {
-    if (order == 0 || fc1 <= 0.0f || fc1 >= fs * 0.5f) return 0;
+    if (order == 0 || order > 8 || fc1 <= 0.0f || fc1 >= fs * 0.5f)
+        return 0;
     if (fc2 <= fc1 || fc2 >= fs * 0.5f) return 0;
 
     float wc1 = 2.0f * (float)M_PI * prewarp(fc1, fs);

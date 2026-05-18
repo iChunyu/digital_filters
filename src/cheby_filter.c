@@ -32,7 +32,8 @@ void cheby1_init(cheby1_t *c, uint8_t type, uint8_t order,
     c->ripple_db = ripple_db;
     c->sos       = NULL;
 
-    if (order == 0 || fc1 <= 0.0f || fc1 >= fs * 0.5f || ripple_db <= 0.0f)
+    if (order == 0 || order > 8 || fc1 <= 0.0f || fc1 >= fs * 0.5f
+        || ripple_db <= 0.0f)
         return;
     if (type == FILTER_BANDPASS || type == FILTER_BANDSTOP) {
         if (fc2 <= fc1 || fc2 >= fs * 0.5f) return;
@@ -203,7 +204,8 @@ void cheby2_init(cheby2_t *c, uint8_t type, uint8_t order,
     c->ripple_db = ripple_db;
     c->sos       = NULL;
 
-    if (order == 0 || fc1 <= 0.0f || fc1 >= fs * 0.5f || ripple_db <= 0.0f)
+    if (order == 0 || order > 8 || fc1 <= 0.0f || fc1 >= fs * 0.5f
+        || ripple_db <= 0.0f)
         return;
     if (type == FILTER_BANDPASS || type == FILTER_BANDSTOP) {
         if (fc2 <= fc1 || fc2 >= fs * 0.5f) return;

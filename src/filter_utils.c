@@ -268,17 +268,6 @@ static inline int is_real(const complex_t *a, float eps)
     return fabsf(a->im) <= eps * sqrtf(a->re * a->re + a->im * a->im);
 }
 
-/* Remove element at idx from array of length *len (shift remaining left).
-   Used with a working copy of the pole/zero lists. */
-static void remove_elem(complex_t *arr, uint8_t *len, uint8_t idx)
-{
-    if (idx < *len - 1) {
-        memmove(&arr[idx], &arr[idx + 1],
-                (size_t)(*len - idx - 1) * sizeof(complex_t));
-    }
-    (*len)--;
-}
-
 /* Compute biquad coefficients from a pole pair and zero pair.
    Poles p1,p2 and zeros z1,z2 are either both real or conjugate pairs. */
 static void make_biquad(const complex_t *p1, const complex_t *p2,
@@ -307,6 +296,7 @@ static void c_mul(float *rr, float *ri, float ar, float ai, float br, float bi)
 static void c_div(float *rr, float *ri, float ar, float ai, float br, float bi)
 {
     float den = br * br + bi * bi;
+    if (den == 0.0f) { *rr = 0.0f; *ri = 0.0f; return; }
     *rr = (ar * br + ai * bi) / den;
     *ri = (ai * br - ar * bi) / den;
 }
@@ -442,7 +432,7 @@ static void claim_conjugate(const complex_t *arr, uint8_t *used, uint8_t n,
 uint8_t zpk2sos(const complex_t *zeros, const complex_t *poles, uint8_t n,
                 float (*sos)[6], float k)
 {
-    if (n == 0) return 0;
+    if (n == 0 || n > 64) return 0;
 
     /* Working copies so we can mutate ownership via used[] flags. */
     uint8_t used_p[64];
@@ -461,8 +451,10 @@ uint8_t zpk2sos(const complex_t *zeros, const complex_t *poles, uint8_t n,
     const float eps_real = 1e-4f;
 
     while (n_p > 0) {
-        /* Safety cap: never exceed allocated rows. */
+        /* Safety caps: never exceed allocated rows
+           or decrement counters past zero. */
         if (section >= max_sections) break;
+        if (n_z == 0) break;
 
         /* 1. Pick the most unfavorable (largest |p|) remaining pole. */
         uint8_t p1_i = find_worst_pole(wp, used_p, n);

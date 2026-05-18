@@ -24,7 +24,7 @@ void butter_init(butter_t *b, uint8_t type, uint8_t order,
     b->sos   = NULL;
 
     /* Validate */
-    if (order == 0 || fc1 <= 0.0f || fc1 >= fs * 0.5f) return;
+    if (order == 0 || order > 8 || fc1 <= 0.0f || fc1 >= fs * 0.5f) return;
     if (type == FILTER_BANDPASS || type == FILTER_BANDSTOP) {
         if (fc2 <= fc1 || fc2 >= fs * 0.5f) return;
     }
