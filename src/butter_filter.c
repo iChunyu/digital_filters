@@ -3,6 +3,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Maximum dynamic filter prototype order.
+ * 12th-order BP/BS → 24 effective order → 24 pole-zero pairs → 12 biquad sections.
+ * Float gain computation is safe up to N=12 for all filter types. */
+#define DYNAMIC_MAX_ORDER 12
+#define DYNAMIC_MAX_PZ   (2 * DYNAMIC_MAX_ORDER)  /* 24 */
+
 static void butter_prototype(complex_t *poles, uint8_t n)
 {
     for (uint8_t k = 0; k < n; k++) {
@@ -24,7 +30,7 @@ void butter_init(butter_t *b, uint8_t type, uint8_t order,
     b->sos   = NULL;
 
     /* Validate */
-    if (order == 0 || order > 8 || fc1 <= 0.0f || fc1 >= fs * 0.5f) return;
+    if (order == 0 || order > DYNAMIC_MAX_ORDER || fc1 <= 0.0f || fc1 >= fs * 0.5f) return;
     if (type == FILTER_BANDPASS || type == FILTER_BANDSTOP) {
         if (fc2 <= fc1 || fc2 >= fs * 0.5f) return;
     }
@@ -44,8 +50,8 @@ void butter_init(butter_t *b, uint8_t type, uint8_t order,
     }
 
     /* 2. Butterworth prototype — N poles, no zeros */
-    complex_t poles[64];
-    complex_t zeros[64];
+    complex_t poles[DYNAMIC_MAX_PZ + 2];
+    complex_t zeros[DYNAMIC_MAX_PZ + 2];
     uint8_t np = order;
     uint8_t nz = 0;
 
@@ -80,7 +86,7 @@ void butter_init(butter_t *b, uint8_t type, uint8_t order,
 
     /* 4. Bilinear gain (before the substitution, on s-domain zp). */
     {
-        complex_t z_analog[64], p_analog[64];
+        complex_t z_analog[DYNAMIC_MAX_PZ + 2], p_analog[DYNAMIC_MAX_PZ + 2];
         memcpy(z_analog, zeros, (size_t)nz * sizeof(complex_t));
         memcpy(p_analog, poles, (size_t)np * sizeof(complex_t));
         k = bilinear_zpk_gain(k, z_analog, nz, p_analog, np, 2.0f * fs);

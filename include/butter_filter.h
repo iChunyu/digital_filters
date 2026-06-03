@@ -38,7 +38,7 @@ typedef struct {
  *
  * @param[out] b      Pointer to the butter_t object.
  * @param[in]  type   Filter type (FILTER_LOWPASS or FILTER_HIGHPASS).
- * @param[in]  order  Filter order N (≥ 1).
+ * @param[in]  order  Filter order N (1 ≤ N ≤ 12).
  * @param[in]  fc1    Cutoff frequency in Hz (0 < fc1 < fs/2).
  * @param[in]  fc2    Upper band-edge in Hz (unused for LP/HP, pass 0).
  * @param[in]  fs     Sampling frequency in Hz.

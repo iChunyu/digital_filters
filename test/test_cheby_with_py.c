@@ -15,7 +15,7 @@
 #define ORDER       7
 #define CHEBY1_RIPPLE_DB 3.0f
 #define CHEBY2_RIPPLE_DB 40.0f
-#define NUM_SAMPLES 400
+#define NUM_SAMPLES 2000
 #define INPUT_FREQ  30.0f
 
 int main(void)

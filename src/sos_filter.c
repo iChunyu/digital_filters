@@ -33,9 +33,11 @@ void sos_filter_set_section(sos_filter_t *filter, uint8_t section_index,
 
 float sos_filter_update(sos_filter_t *filter, float input)
 {
+    const uint8_t        n   = filter->num_sections;
+    biquad_filter_t     *sec = filter->sections;
     float x = input;
-    for (uint8_t i = 0; i < filter->num_sections; i++) {
-        x = biquad_filter_update(&filter->sections[i], x);
+    for (uint8_t i = 0; i < n; i++) {
+        x = biquad_filter_update(&sec[i], x);
     }
     return x;
 }

@@ -22,6 +22,10 @@ add_executable(test_static_cheby test_static_cheby.c)
 target_link_libraries(test_static_cheby PRIVATE digital_filters m)
 add_test(NAME test_static_cheby COMMAND test_static_cheby)
 
+add_executable(test_high_order test_high_order.c)
+target_link_libraries(test_high_order PRIVATE digital_filters m)
+add_test(NAME test_high_order COMMAND test_high_order)
+
 # Comparison-with-Python executables (manual verification, not run by ctest)
 add_executable(test_butter_with_py test_butter_with_py.c)
 target_link_libraries(test_butter_with_py PRIVATE digital_filters m)

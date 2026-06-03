@@ -13,7 +13,7 @@
 #define FC1_BP   20.0f
 #define FC2_BP   50.0f
 #define ORDER    7
-#define NUM_SAMPLES 400
+#define NUM_SAMPLES 2000
 #define INPUT_FREQ  30.0f
 
 int main(void)

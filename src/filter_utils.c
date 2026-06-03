@@ -429,15 +429,19 @@ static void claim_conjugate(const complex_t *arr, uint8_t *used, uint8_t n,
     out->im = -arr[idx].im;
 }
 
+/* Maximum number of pole-zero pairs supported by zpk2sos.
+ * 12th-order prototype → BP/BS doubles to 24; 2× headroom = 48. */
+#define ZPK2SOS_MAX_N 48
+
 uint8_t zpk2sos(const complex_t *zeros, const complex_t *poles, uint8_t n,
                 float (*sos)[6], float k)
 {
-    if (n == 0 || n > 64) return 0;
+    if (n == 0 || n > ZPK2SOS_MAX_N) return 0;
 
     /* Working copies so we can mutate ownership via used[] flags. */
-    uint8_t used_p[64];
-    uint8_t used_z[64];
-    complex_t wp[64], wz[64];
+    uint8_t used_p[ZPK2SOS_MAX_N];
+    uint8_t used_z[ZPK2SOS_MAX_N];
+    complex_t wp[ZPK2SOS_MAX_N], wz[ZPK2SOS_MAX_N];
 
     memcpy(wp, poles, n * sizeof(complex_t));
     memcpy(wz, zeros, n * sizeof(complex_t));

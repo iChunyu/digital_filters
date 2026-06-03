@@ -77,21 +77,6 @@ void biquad_filter_init(biquad_filter_t *filter, const float num_z[3],
     filter->w[2] = 0.0f;
 }
 
-float biquad_filter_update(biquad_filter_t *filter, float input)
-{
-    /* Shift state */
-    filter->w[2] = filter->w[1];
-    filter->w[1] = filter->w[0];
-
-    /* Compute new state: w[n] = x[n] - a1*w[n-1] - a2*w[n-2] */
-    filter->w[0] = input
-                   - filter->den_z[1] * filter->w[1]
-                   - filter->den_z[2] * filter->w[2];
-
-    /* Output: y[n] = b0*w[n] + b1*w[n-1] + b2*w[n-2] */
-    return biquad_filter_get_output(filter);
-}
-
 float biquad_filter_get_output(const biquad_filter_t *filter)
 {
     return filter->num_z[0] * filter->w[0]
