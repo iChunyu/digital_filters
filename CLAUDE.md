@@ -14,7 +14,7 @@ cd build && ctest --output-on-failure
 
 ## 架构
 
-这是一个 **数字滤波器库**，用 C 实现，基于 **双二阶 (biquad, 二阶 IIR)** 滤波器及其 **级联 (SOS — 二阶节)** 构成高阶滤波器。所有滤波器均采用 **Direct Form II（规范型）**。
+这是一个面向 **MCU / 嵌入式** 的 **IIR 数字滤波器库**，纯 C，基于 **双二阶 (biquad)** 滤波器及其级联（SOS，二阶节）构成高阶滤波器。所有滤波器采用 **Direct Form II（规范型）**。**零 `malloc`，零 `double`，全部 `float`。**
 
 三种滤波器族共享同一条设计流水线（模拟原型 → 频率变换 → 双线性离散化 → 零极点配对 → SOS 部署）：
 - **Butterworth** — 通带最大平坦
@@ -22,101 +22,74 @@ cd build && ctest --output-on-failure
 - **Chebyshev Type II** — 通带单调，阻带等波纹
 
 支持四种滤波器类型：`FILTER_LOWPASS`, `FILTER_HIGHPASS`, `FILTER_BANDPASS`, `FILTER_BANDSTOP`。
+最大原型阶数 **8 阶**（BP/BS 有效 16 阶）。
 
 **双二阶传递函数:** `H(z) = (b0 + b1·z⁻¹ + b2·z⁻²) / (1 + a1·z⁻¹ + a2·z⁻²)`
 
-### 两套 API
+### API 设计
 
-项目提供两套 API 共存：
+所有结构体由 X-macro 生成，阶数编译时确定，内嵌 `biquad_filter_t sections[]`，
+零堆分配。离开作用域自动回收，无需 `_destroy`。
 
-| API | 内存模型 | 最大阶数 | 适用场景 |
-|---|---|---|---|
-| 动态 API (`butter_t`, `cheby1_t`, `cheby2_t`) | `malloc` / `free` | **12 阶**（原型） | 桌面端，阶数运行时决定 |
-| 静态 API (`butter_lp_2nd_t`, `cheby1_hp_3rd_t` 等) | 结构体内嵌数组，零 `malloc` | **8 阶**（原型） | MCU，阶数编译时确定 |
+```
+butter_lp_2nd_t   cheby1_hp_3rd_t   cheby2_bs_5th_t  ...
+```
 
-动态 API 阶数限制为 12（原型阶数，即 `_init` 的 `order` 参数）。对 BP/BS，频率变换使有效阶数翻倍（12 阶原型 → 24 阶有效滤波器）。增益追踪使用 `float`（非 `double`），`wc^N`、`K^N`（HP bilinear）在原型 N>12 时有溢出风险。12 阶覆盖所有常见 fs 和 fc 组合。
+- **Butterworth**：32 个结构体（4 类型 × 8 阶），共享 `BUTTER_FIELDS` 前缀
+- **Chebyshev**：64 个结构体（Type I/II × 4 类型 × 8 阶），共享 `CHEBY_FIELDS` 前缀
 
-静态 API 阶数保持 8（ROM 极点表按 8 阶预计算）。
+内部辅助函数直接接收 `biquad_filter_t *sections` + 参数，宏生成的 init/update/reset
+在调用侧传递对应字段，无需强转。内部函数命名遵循 `{butter,cheby{1,2}}_{type}_{func}` 规则
+（如 `butter_lp_init`、`butter_design`、`cheby2_bp_init`）。
 
-静态 API 的关键设计：
-- 所有 Butterworth 静态结构体共享统一前缀 (`STATIC_BUTTER_FIELDS`)。内部辅助函数直接接收 `biquad_filter_t *sections` + 参数，宏生成的 init/update/reset 在调用侧传递对应字段，无需结构体强转。内部函数命名遵循 `static_butter_{type}_{func}` 规则（如 `static_butter_lp_init`、`static_butter_design`）。对外 exposed 的 update/reset 按阶数/类型分别定义（如 `butter_lp_2nd_update`），调用时无需强转。Chebyshev 同理（`STATIC_CHEBY_FIELDS`、`static_cheby_design`、`static_cheby1_lp_init` 等）。
-- 只有 `_init` 按阶数分别定义，因为不同阶数需要不同大小的栈上临时数组。
-- Butterworth 原型极点仅依赖阶数 N，预计算为 `static const complex_t butter_proto[8][8]` 存入 ROM（~512 字节），init 时无需调用 `cosf`/`sinf`。
-- Chebyshev 原型依赖 ripple，在 init 时运行时计算。
-- 节数规则：LP/HP 需 `ceil(N/2)` 节，BP/BS 需 `N` 节（频率变换使阶数翻倍）。8 阶 BP/BS 最多 8 节。
+对外 exposed 的 update/reset 按阶数/类型分别定义（如 `butter_lp_2nd_update`、
+`cheby1_bp_5th_reset`），调用时无需强转。
+
+- 只有 `_init` 按阶数分别定义，因为不同阶数需要不同大小的栈上临时数组
+- Butterworth 原型极点预计算为 `static const complex_t butter_proto[8][8]` 存入 ROM（~512 字节），
+  init 时无需调用 `cosf`/`sinf`
+- Chebyshev 原型依赖 ripple，在 init 时运行时计算
+- 节数规则：LP/HP 需 `ceil(N/2)` 节，BP/BS 需 `N` 节（频率变换使阶数翻倍）
 
 ### 关键设计决策
 
 **biquad_filter**
-- **系数归一化**: `den_z[0]` 内部始终归一化为 1.0。`biquad_filter_init()` 会在入口处将所有系数除以 `den_z[0]`。
-- **静默降级为直通**: 若分母为零或极点不稳定，`biquad_filter_init()` 静默地将滤波器替换为单位直通 (`H(z) = 1`)。无错误码。
-- **稳定性检测** 使用二阶系统的全部三个 **Jury 条件**: `|a2| < 1`, `1 + a1 + a2 > 0`, `1 - a1 + a2 > 0`。
-- **状态向量 `w[3]`** 保存 `w[n], w[n-1], w[n-2]` — 规范型 Direct Form II 信号流图中的中间节点。每个 biquad 仅需 3 个 float 状态。
-- **双线性变换** (`biquad_c2d_bilinear`) 使用代换 `s = 2·fs · (1 - z⁻¹)/(1 + z⁻¹)` 将 s 域映射到 z 域。
-- **稳态复位** 计算 `w_ss = equilibrium / (1 + a1 + a2)`。分母保证非零，因为 `biquad_filter_init()` 强制 `1 + a1 + a2 > 0`（否则降级为直通，此时 `a1 = a2 = 0`）。
-- **`biquad_filter_update` 为 `static inline`**（header-only）。状态更新与输出计算融合——先快照 `w[0]`、`w[1]` 到寄存器，一次性缓存全部 5 个系数，计算完 `w0` 后批量写回状态 + 计算输出。消除每节 1 次函数调用和 3 次重复 w[] 加载。
-- `biquad_filter_get_input()` 从状态重建 `x[n]` — 用于调试或滤波器级联。
-
-**sos_filter（biquad 级联，动态 API）**
-- `sos_filter_init` 通过 `malloc` 分配节数组并初始化所有节为直通。必须与 `sos_filter_destroy` 配对以释放。**不** 存储采样频率 — 这属于设计层面（butter_t, cheby1_t 等）。
-- `sos_filter_update` 串行处理采样：`input → sec[0] → sec[1] → ... → output`。`num_sections` 和 `sections` 指针缓存到局部变量，减少循环内解引用。
-- `sos_filter_reset` 将稳态值传播通过级联：每节以前一节的 DC 输出（通过 `biquad_filter_get_output` 计算）复位，保持整体 DC 响应。
-- `sos_filter_get_input` 恢复第一节的输入（整体滤波器输入）。`sos_filter_get_output` 返回最后一节的输出。
-- `sos_filter_set_section` 静默忽略越界索引，与直通降级模式一致。
+- **系数归一化**: `den_z[0]` 内部始终归一化为 1.0
+- **静默降级为直通**: 分母为零或极点不稳定 → 替换为单位直通 (`H(z)=1`)
+- **稳定性检测**：全部三个 Jury 条件 — `|a2| < 1`, `1 + a1 + a2 > 0`, `1 - a1 + a2 > 0`
+- **状态向量 `w[3]`**：Direct Form II，每 biquad 仅需 3 个 `float` 状态
+- **`biquad_filter_update` 为 `static inline`**（header-only）。状态更新与输出计算融合——
+  先快照 `w[0]`、`w[1]` 到寄存器，一次性缓存全部 5 个系数，计算完 `w0` 后批量写回状态 + 计算输出
+- **稳态复位**：`w_ss = equilibrium / (1 + a1 + a2)`，分母保证非零
 
 **filter_utils（设计时工具）**
-- `complex_t` — 简单的 `{float re, im}` 结构体，贯穿整个设计流水线。
-- `prewarp(fd, fs)` — 双线性频率预畸变：`f_analog = fs/π · tan(π · fd / fs)`。
-- `analog_lp_transform / analog_hp_transform` — s 域频率变换（LP 缩放 `wc`，HP 为 `wc/p`）。
-- `analog_bp_transform / analog_bs_transform` — s 域带通/带阻变换（代换 `s → (s²+ω₀²)/(ξ·s)` 或反向，阶数翻倍）。
-- `bilinear_transform` — 原地将 s 域极点/零点映射到 z 域：`z = (2fs + s) / (2fs - s)`。
-- **增益追踪全部使用 `float`**。`zpk_lp_gain`、`zpk_bp_gain` 等函数累乘频率因子；`zpk_hp_bs_gain` 和 `bilinear_zpk_gain` 通过 `c_mul`/`c_div` 交替乘除避免中间溢出。在 N≤12 的约束下保证安全。
-- `zpk2sos` — 将 z 域零极点数组转为 SOS 系数矩阵。使用"最不利极点优先"配对算法（选择最靠近单位圆的极点，与最近的零点配对，处理实/复共轭对，反转节序使快极点在前）。每节在参考频率处增益归一化（LP/BS 为 DC，HP 为 Nyquist，BP 为中心频率）。工作数组大小 `ZPK2SOS_MAX_N = 48`（12 阶 BP/BS → 24 对 × 2 倍余量）。
-
-**动态 API 滤波器对象 (butter_filter / cheby_filter)**
-- 每种滤波器类型有各自的结构体 (`butter_t`, `cheby1_t`, `cheby2_t`)，包装一个 `sos_filter_t*`。
-- `_init` 编排完整设计流水线，接收 type (LP/HP/BP/BS)、order (1~12)、截止频率、fs，以及（对于 Chebyshev）ripple dB。失败时设 `valid = 0` 并将 `sos` 置 NULL。
-- `_update` / `_reset` 委托给底层 SOS 级联；均会在 `!valid` 时直通返回。
-- `_destroy` 释放 SOS 级联并将滤波器标记为无效。
-- Chebyshev 结构体包含 `ripple_db` 字段（Type I 为通带纹波，Type II 为最小阻带衰减）。
-- Chebyshev II 的 ε 参数公式：`ε = 1 / sqrt(10^(dB/10) - 1)`（与 Type I 的 `ε = sqrt(10^(dB/10) - 1)` 互为倒数）。
-- 栈上数组大小 `DYNAMIC_MAX_PZ + 2 = 26`（12 阶 BP → 24 极零点 + 余量）。
-
-**静态 API 滤波器对象 (static_butter_filter / static_cheby_filter)**
-- 所有按阶数/类型定义的结构体共享统一前缀（`STATIC_BUTTER_FIELDS` / `STATIC_CHEBY_FIELDS`）。内部辅助函数直接接收 `biquad_filter_t *sections`，宏生成的 init/update/reset 负责传递对应字段和元数据设置，对外 exposed 的 `_update` / `_reset` 均按具体类型定义（如 `butter_lp_2nd_update`），调用时无需强转。内部函数遵循 `static_{butter,cheby{1,2}}_{type}_{func}` 命名规则。
-- 结构体通过 X-macro 生成：`FOR_EACH_STATIC_BUTTER_LP_ORDER` (order, sections, ordinal) 和 `FOR_EACH_STATIC_BUTTER_BP_ORDER`。每个滤波器族 32 个结构体（4 种类型 × 8 阶），Chebyshev 为 64 个（I 和 II 各 32 个）。
-- `_init` 函数接收截止频率和（对于 Chebyshev）ripple，在栈上完成设计流水线，将系数部署到内嵌的 `biquad_filter_t sections[]` 中。
-- 无需 `_destroy` — 结构体离开作用域即自动回收。
+- `complex_t` — `{float re, im}`
+- `prewarp(fd, fs)` — `f_analog = fs/π · tan(π · fd / fs)`
+- `analog_lp/hp/bp/bs_transform` — s 域频率变换
+- `bilinear_transform` — 原地映射 `z = (2fs + s) / (2fs - s)`
+- 增益追踪全部使用 `float`，交替乘除避免中间溢出
+- `zpk2sos` — "最不利极点优先"配对算法。工作数组 `ZPK2SOS_MAX_N = 48`
 
 ### 文件
 
 | 文件 | 用途 |
 |---|---|
-| `include/biquad_filter.h` | Biquad 公开 API（含 inline update）+ Doxygen 文档 |
-| `include/sos_filter.h` | SOS 级联公开 API（动态，malloc） |
-| `include/filter_utils.h` | 设计时工具 (complex_t, prewarp, 变换, zpk2sos) |
-| `include/butter_filter.h` | Butterworth 动态 API（1~12 阶） |
-| `include/cheby_filter.h` | Chebyshev I & II 动态 API（1~12 阶） |
-| `include/static_butter_filter.h` | Butterworth 静态 API（32 个按阶结构体，按阶 update/reset） |
-| `include/static_cheby_filter.h` | Chebyshev I & II 静态 API（64 个按阶结构体，按阶 update/reset） |
+| `include/biquad_filter.h` | Biquad 公开 API（含 inline update） |
+| `include/filter_utils.h` | 设计工具 (complex_t, prewarp, 变换, zpk2sos) |
+| `include/butter_filter.h` | Butterworth API（X-macro 生成 32 结构体） |
+| `include/cheby_filter.h` | Chebyshev I & II API（X-macro 生成 64 结构体） |
 | `src/biquad_filter.c` | Biquad 实现（init, reset, get_output, get_input, c2d_bilinear） |
-| `src/sos_filter.c` | SOS 级联实现（含 malloc/free） |
-| `src/filter_utils.c` | 设计工具实现（含 float 增益追踪） |
-| `src/butter_filter.c` | Butterworth 原型 + 动态 init/destroy/update/reset |
-| `src/cheby_filter.c` | Chebyshev I & II 原型 + 动态 init/destroy/update/reset |
-| `src/static_butter_filter.c` | 预计算极点表、共享流水线、按阶 init/update/reset |
-| `src/static_cheby_filter.c` | 运行时原型计算、共享流水线、按阶 init/update/reset |
-| `test/test_biquad.c` | Biquad 测试 (CHECK/CLOSE 框架) |
-| `test/test_sos.c` | SOS 级联测试 |
-| `test/test_butter.c` | Butterworth 动态 API 测试 (LP/HP/BP/BS) |
-| `test/test_cheby.c` | Chebyshev I/II 动态 API 测试 |
-| `test/test_static_butter.c` | Butterworth 静态 API 测试（全类型、多阶数） |
-| `test/test_static_cheby.c` | Chebyshev 静态 API 测试 |
-| `test/test_high_order.c` | 高阶动态 API 测试（8/10/12 阶） |
+| `src/filter_utils.c` | 设计工具实现 |
+| `src/butter_filter.c` | 预计算极点表、设计流水线、按阶 init/update/reset |
+| `src/cheby_filter.c` | 运行时原型计算、设计流水线、按阶 init/update/reset |
+| `test/test_biquad.c` | Biquad 测试 |
+| `test/test_butter.c` | Butterworth 测试（全类型、多阶数） |
+| `test/test_cheby.c` | Chebyshev I/II 测试（全类型、多阶数） |
 | `test/test_butter_with_py.c` | 生成 CSV 与 scipy 参考对比 |
 | `test/test_cheby_with_py.c` | 生成 CSV 与 scipy 参考对比 |
 | `test/test_butter_use_py.py` | Python 参考滤波器（Butterworth，含绘图） |
 | `test/test_cheby_use_py.py` | Python 参考滤波器（Chebyshev，含绘图） |
 | `test/compare_scipy.py` | 稳态精度对比脚本（跳过瞬态取最后 10%） |
-| `CMakeLists.txt` | 顶层 CMake（静态库、测试、安装规则） |
+| `test/verify_zpk_gain.py` | 验证 float32 精度足够 zpk 增益追踪（独立复现 scipy 管线，f64 vs f32） |
+| `CMakeLists.txt` | 顶层 CMake |
 | `test/CMakeLists.txt` | 测试可执行文件 + CTest 注册 |

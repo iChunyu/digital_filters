@@ -2,83 +2,151 @@
 #define BUTTER_FILTER_H_
 
 #include <stdint.h>
-#include "sos_filter.h"
+#include "biquad_filter.h"
 #include "filter_utils.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/**
- * @brief Butterworth filter object.
- *
- * Wraps a cascade of second-order sections (sos_filter_t) designed from the
- * Butterworth analog prototype via pre-warping, frequency transform, bilinear
- * discretisation, and pole-zero pairing.
- */
-typedef struct {
-    uint8_t       valid;  /**< 1 if initialisation succeeded, 0 otherwise */
-    uint8_t       type;   /**< filter_type_e: LOWPASS, HIGHPASS, etc.       */
-    uint8_t       order;  /**< Filter order N                               */
-    float         fc1;    /**< Cutoff / lower band-edge in Hz               */
-    float         fc2;    /**< Upper band-edge in Hz (unused for LP / HP)   */
-    float         fs;     /**< Sampling frequency in Hz                     */
-    sos_filter_t *sos;    /**< Cascade of biquad sections (allocated on init) */
-} butter_t;
+/* ── Common prefix for all static Butterworth structs ─────────────────── */
+
+#define BUTTER_FIELDS \
+    uint8_t  valid;        /* 1 = init succeeded                          */ \
+    uint8_t  type;         /* filter_type_e: LOWPASS, HIGHPASS, etc.     */ \
+    uint8_t  order;        /* filter order N                              */ \
+    uint8_t  num_sections; /* number of active biquad sections            */ \
+    float    fc1;          /* cutoff / lower band-edge in Hz              */ \
+    float    fc2;          /* upper band-edge in Hz (0 for LP/HP)         */ \
+    float    fs;           /* sampling frequency in Hz                    */
+
+/* ── Order tables (X-macro) ───────────────────────────────────────────── */
+/* order, sections_for_lp_hp, ordinal_label */
+
+#define FOR_EACH_BUTTER_LP_ORDER \
+    X(1, 1, 1st) \
+    X(2, 1, 2nd) \
+    X(3, 2, 3rd) \
+    X(4, 2, 4th) \
+    X(5, 3, 5th) \
+    X(6, 3, 6th) \
+    X(7, 4, 7th) \
+    X(8, 4, 8th)
+
+/* order, sections_for_bp_bs, ordinal_label */
+
+#define FOR_EACH_BUTTER_BP_ORDER \
+    X(1, 1, 1st) \
+    X(2, 2, 2nd) \
+    X(3, 3, 3rd) \
+    X(4, 4, 4th) \
+    X(5, 5, 5th) \
+    X(6, 6, 6th) \
+    X(7, 7, 7th) \
+    X(8, 8, 8th)
+
+/* ── Per-order struct typedefs ────────────────────────────────────────── */
+
+/* Lowpass */
+#define X(order, ns, ol) \
+    typedef struct { BUTTER_FIELDS biquad_filter_t sections[ns]; } butter_lp_##ol##_t;
+FOR_EACH_BUTTER_LP_ORDER
+#undef X
+
+/* Highpass */
+#define X(order, ns, ol) \
+    typedef struct { BUTTER_FIELDS biquad_filter_t sections[ns]; } butter_hp_##ol##_t;
+FOR_EACH_BUTTER_LP_ORDER
+#undef X
+
+/* Bandpass */
+#define X(order, ns, ol) \
+    typedef struct { BUTTER_FIELDS biquad_filter_t sections[ns]; } butter_bp_##ol##_t;
+FOR_EACH_BUTTER_BP_ORDER
+#undef X
+
+/* Bandstop */
+#define X(order, ns, ol) \
+    typedef struct { BUTTER_FIELDS biquad_filter_t sections[ns]; } butter_bs_##ol##_t;
+FOR_EACH_BUTTER_BP_ORDER
+#undef X
+
+/* ── Per-order init declarations ──────────────────────────────────────── */
+
+/* Lowpass: init(f, fc, fs) */
+#define X(order, ns, ol) \
+    void butter_lp_##ol##_init(butter_lp_##ol##_t *f, float fc, float fs);
+FOR_EACH_BUTTER_LP_ORDER
+#undef X
+
+/* Highpass: init(f, fc, fs) */
+#define X(order, ns, ol) \
+    void butter_hp_##ol##_init(butter_hp_##ol##_t *f, float fc, float fs);
+FOR_EACH_BUTTER_LP_ORDER
+#undef X
+
+/* Bandpass: init(f, fc1, fc2, fs) */
+#define X(order, ns, ol) \
+    void butter_bp_##ol##_init(butter_bp_##ol##_t *f, float fc1, float fc2, float fs);
+FOR_EACH_BUTTER_BP_ORDER
+#undef X
+
+/* Bandstop: init(f, fc1, fc2, fs) */
+#define X(order, ns, ol) \
+    void butter_bs_##ol##_init(butter_bs_##ol##_t *f, float fc1, float fc2, float fs);
+FOR_EACH_BUTTER_BP_ORDER
+#undef X
+
+/* ── Per-order update / reset declarations ────────────────────────────── */
 
 /**
- * @brief Design and initialise a Butterworth filter.
+ * @brief Process one sample through a statically-allocated Butterworth filter.
  *
- * Generates the analog prototype, applies the frequency transform and bilinear
- * discretisation, pairs poles and zeros into second-order sections, and
- * deploys them into the internal sos_filter_t cascade.
+ * Functions follow the naming convention butter_{lp,hp,bp,bs}_{1st..8th}_update.
+ * If the filter is invalid (!valid), returns @p input unchanged (passthrough).
  *
- * On failure (invalid order, cutoff out of range, etc.) @p valid is set to 0
- * and @p sos is left as NULL.
- *
- * @param[out] b      Pointer to the butter_t object.
- * @param[in]  type   Filter type (FILTER_LOWPASS or FILTER_HIGHPASS).
- * @param[in]  order  Filter order N (1 ≤ N ≤ 12).
- * @param[in]  fc1    Cutoff frequency in Hz (0 < fc1 < fs/2).
- * @param[in]  fc2    Upper band-edge in Hz (unused for LP/HP, pass 0).
- * @param[in]  fs     Sampling frequency in Hz.
- */
-void butter_init(butter_t *b, uint8_t type, uint8_t order,
-                 float fc1, float fc2, float fs);
-
-/**
- * @brief Free the internal SOS cascade and mark the filter invalid.
- *
- * Safe to call on an already-destroyed or never-initialised filter
- * (sos == NULL is a no-op).
- *
- * @param[in,out] b  Pointer to the butter_t object.
- */
-void butter_destroy(butter_t *b);
-
-/**
- * @brief Process one input sample and return the filtered output.
- *
- * If the filter was not successfully initialised (@p valid == 0) the input is
- * passed through unchanged.
- *
- * @param[in,out] b      Pointer to the butter_t object.
+ * @param[in,out] f      Pointer to the filter struct.
  * @param[in]     input  Current input sample.
- * @return               Filtered output sample.
+ * @return               Filtered output.
  */
-float butter_update(butter_t *b, float input);
 
 /**
- * @brief Reset the filter to a steady-state equilibrium.
+ * @brief Reset a statically-allocated Butterworth filter to steady-state.
  *
- * Propagates the given constant input through the cascade so that subsequent
- * calls to butter_update() produce the same constant output immediately.
- * No-op if @p valid == 0.
+ * Functions follow the naming convention butter_{lp,hp,bp,bs}_{1st..8th}_reset.
+ * No-op if the filter is invalid (!valid).
  *
- * @param[in,out] b           Pointer to the butter_t object.
+ * @param[in,out] f           Pointer to the filter struct.
  * @param[in]     equilibrium  Constant input value at steady-state.
  */
-void butter_reset(butter_t *b, float equilibrium);
+
+/* Lowpass */
+#define X(order, ns, ol) \
+    float butter_lp_##ol##_update(butter_lp_##ol##_t *f, float input); \
+    void  butter_lp_##ol##_reset(butter_lp_##ol##_t *f, float equilibrium);
+FOR_EACH_BUTTER_LP_ORDER
+#undef X
+
+/* Highpass */
+#define X(order, ns, ol) \
+    float butter_hp_##ol##_update(butter_hp_##ol##_t *f, float input); \
+    void  butter_hp_##ol##_reset(butter_hp_##ol##_t *f, float equilibrium);
+FOR_EACH_BUTTER_LP_ORDER
+#undef X
+
+/* Bandpass */
+#define X(order, ns, ol) \
+    float butter_bp_##ol##_update(butter_bp_##ol##_t *f, float input); \
+    void  butter_bp_##ol##_reset(butter_bp_##ol##_t *f, float equilibrium);
+FOR_EACH_BUTTER_BP_ORDER
+#undef X
+
+/* Bandstop */
+#define X(order, ns, ol) \
+    float butter_bs_##ol##_update(butter_bs_##ol##_t *f, float input); \
+    void  butter_bs_##ol##_reset(butter_bs_##ol##_t *f, float equilibrium);
+FOR_EACH_BUTTER_BP_ORDER
+#undef X
 
 #ifdef __cplusplus
 }

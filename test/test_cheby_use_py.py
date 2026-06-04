@@ -22,14 +22,14 @@ INPUT_FREQ = 30.0
 
 FILTER_CONFIGS = [
     # (title, scipy_fn, btype, dyn_col, sta_col, ripple, fc1, fc2)
-    ("Chebyshev I LP",  signal.cheby1, "lowpass",  "cheby1_lp", "static_cheby1_lp",  3.0, FC_LP,  None),
-    ("Chebyshev I HP",  signal.cheby1, "highpass", "cheby1_hp", "static_cheby1_hp",  3.0, FC_HP,  None),
-    ("Chebyshev I BP",  signal.cheby1, "bandpass", "cheby1_bp", "static_cheby1_bp",  3.0, FC1_BP, FC2_BP),
-    ("Chebyshev I BS",  signal.cheby1, "bandstop", "cheby1_bs", "static_cheby1_bs",  3.0, FC1_BP, FC2_BP),
-    ("Chebyshev II LP", signal.cheby2, "lowpass",  "cheby2_lp", "static_cheby2_lp", 40.0, FC_LP,  None),
-    ("Chebyshev II HP", signal.cheby2, "highpass", "cheby2_hp", "static_cheby2_hp", 40.0, FC_HP,  None),
-    ("Chebyshev II BP", signal.cheby2, "bandpass", "cheby2_bp", "static_cheby2_bp", 40.0, FC1_BP, FC2_BP),
-    ("Chebyshev II BS", signal.cheby2, "bandstop", "cheby2_bs", "static_cheby2_bs", 40.0, FC1_BP, FC2_BP),
+    ("Chebyshev I LP",  signal.cheby1, "lowpass",  "cheby1_lp", "cheby1_lp",  3.0, FC_LP,  None),
+    ("Chebyshev I HP",  signal.cheby1, "highpass", "cheby1_hp", "cheby1_hp",  3.0, FC_HP,  None),
+    ("Chebyshev I BP",  signal.cheby1, "bandpass", "cheby1_bp", "cheby1_bp",  3.0, FC1_BP, FC2_BP),
+    ("Chebyshev I BS",  signal.cheby1, "bandstop", "cheby1_bs", "cheby1_bs",  3.0, FC1_BP, FC2_BP),
+    ("Chebyshev II LP", signal.cheby2, "lowpass",  "cheby2_lp", "cheby2_lp", 40.0, FC_LP,  None),
+    ("Chebyshev II HP", signal.cheby2, "highpass", "cheby2_hp", "cheby2_hp", 40.0, FC_HP,  None),
+    ("Chebyshev II BP", signal.cheby2, "bandpass", "cheby2_bp", "cheby2_bp", 40.0, FC1_BP, FC2_BP),
+    ("Chebyshev II BS", signal.cheby2, "bandstop", "cheby2_bs", "cheby2_bs", 40.0, FC1_BP, FC2_BP),
 ]
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))

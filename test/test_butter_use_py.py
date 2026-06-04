@@ -21,10 +21,10 @@ ORDER = 7
 INPUT_FREQ = 30.0
 
 FILTER_CONFIGS = [
-    ("LP", "lowpass", "butter_lp", "static_butter_lp", FC_LP, None),
-    ("HP", "highpass", "butter_hp", "static_butter_hp", FC_HP, None),
-    ("BP", "bandpass", "butter_bp", "static_butter_bp", FC1_BP, FC2_BP),
-    ("BS", "bandstop", "butter_bs", "static_butter_bs", FC1_BP, FC2_BP),
+    ("LP", "lowpass", "butter_lp", "butter_lp", FC_LP, None),
+    ("HP", "highpass", "butter_hp", "butter_hp", FC_HP, None),
+    ("BP", "bandpass", "butter_bp", "butter_bp", FC1_BP, FC2_BP),
+    ("BS", "bandstop", "butter_bs", "butter_bs", FC1_BP, FC2_BP),
 ]
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -67,7 +67,7 @@ def main():
 
         ax1.plot(t, x, label="input", color="gray", alpha=0.5)
         ax1.plot(t, c_dyn, label="butter_t", linestyle="--")
-        ax1.plot(t, c_sta, label="static_butter_7th_t", linestyle=":")
+        ax1.plot(t, c_sta, label="butter_7th_t", linestyle=":")
         ax1.plot(t, scipy_out, label="scipy.signal.butter", linestyle="-.")
         ax1.set_ylabel("Amplitude")
         ax1.legend(loc="best")
@@ -87,7 +87,7 @@ def main():
         err_dyn = c_dyn - scipy_out
         err_sta = c_sta - scipy_out
         ax2.plot(t, err_dyn, label="butter_t − scipy", linestyle="--")
-        ax2.plot(t, err_sta, label="static_butter_7th_t − scipy", linestyle=":")
+        ax2.plot(t, err_sta, label="butter_7th_t − scipy", linestyle=":")
         ax2.set_xlabel("Time (s)")
         ax2.set_ylabel("Error")
         ax2.legend(loc="best")
