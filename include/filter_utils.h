@@ -187,6 +187,18 @@ float bilinear_zpk_gain(float k, const complex_t *z, uint8_t nz,
  * @param[in]  k        Overall system gain applied to sos[0] numerator.
  * @return              Number of SOS sections = ceil(n/2).
  */
+/**
+ * @brief Same as zpk2sos, but works directly on mutable pole/zero arrays
+ *        without making internal copies.  The caller's arrays are read but
+ *        not modified; ownership tracking uses an internal used[] bitmap.
+ *
+ * This saves ~256 bytes of stack vs. the const-correct zpk2sos wrapper,
+ * which is significant on MCUs where zpk2sos is called deep in the init
+ * call chain (butter_design / cheby_design).
+ */
+uint8_t zpk2sos_impl(complex_t *zeros, complex_t *poles, uint8_t n,
+                     float (*sos)[6], float k);
+
 uint8_t zpk2sos(const complex_t *zeros, const complex_t *poles, uint8_t n,
                 float (*sos)[6], float k);
 

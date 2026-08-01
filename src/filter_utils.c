@@ -377,7 +377,7 @@ static uint8_t find_nearest(const complex_t *arr, const uint8_t *used, uint8_t n
                             const complex_t *target)
 {
     uint8_t idx = 0;
-    float best = INFINITY;
+    float best = 1e30f;
     for (uint8_t i = 0; i < n; i++) {
         if (used[i]) continue;
         float d = c_dist(&arr[i], target);
@@ -430,21 +430,16 @@ static void claim_conjugate(const complex_t *arr, uint8_t *used, uint8_t n,
 }
 
 /* Maximum number of pole-zero pairs supported by zpk2sos.
- * 12th-order prototype → BP/BS doubles to 24; 2× headroom = 48. */
-#define ZPK2SOS_MAX_N 48
+ * 8th-order prototype → BP/BS doubles to 16. */
+#define ZPK2SOS_MAX_N 16
 
-uint8_t zpk2sos(const complex_t *zeros, const complex_t *poles, uint8_t n,
-                float (*sos)[6], float k)
+uint8_t zpk2sos_impl(complex_t *zeros, complex_t *poles, uint8_t n,
+                     float (*sos)[6], float k)
 {
     if (n == 0 || n > ZPK2SOS_MAX_N) return 0;
 
-    /* Working copies so we can mutate ownership via used[] flags. */
     uint8_t used_p[ZPK2SOS_MAX_N];
     uint8_t used_z[ZPK2SOS_MAX_N];
-    complex_t wp[ZPK2SOS_MAX_N], wz[ZPK2SOS_MAX_N];
-
-    memcpy(wp, poles, n * sizeof(complex_t));
-    memcpy(wz, zeros, n * sizeof(complex_t));
     memset(used_p, 0, n * sizeof(uint8_t));
     memset(used_z, 0, n * sizeof(uint8_t));
 
@@ -461,8 +456,8 @@ uint8_t zpk2sos(const complex_t *zeros, const complex_t *poles, uint8_t n,
         if (n_z == 0) break;
 
         /* 1. Pick the most unfavorable (largest |p|) remaining pole. */
-        uint8_t p1_i = find_worst_pole(wp, used_p, n);
-        complex_t p1 = wp[p1_i];
+        uint8_t p1_i = find_worst_pole(poles, used_p, n);
+        complex_t p1 = poles[p1_i];
         used_p[p1_i] = 1;
         n_p--;
 
@@ -470,15 +465,15 @@ uint8_t zpk2sos(const complex_t *zeros, const complex_t *poles, uint8_t n,
 
         if (is_real(&p1, eps_real)) {
             /* p1 is real — try to pair with another real pole. */
-            if (count_used(used_p, n, wp, 1, eps_real) > 0) {
-                uint8_t p2_i = find_nearest(wp, used_p, n, &p1);
-                p2 = wp[p2_i];
+            if (count_used(used_p, n, poles, 1, eps_real) > 0) {
+                uint8_t p2_i = find_nearest(poles, used_p, n, &p1);
+                p2 = poles[p2_i];
                 used_p[p2_i] = 1;
                 n_p--;
             } else {
                 /* No more real poles → first-order section with a real zero. */
-                uint8_t z1_i = find_nearest(wz, used_z, n, &p1);
-                z1 = wz[z1_i];
+                uint8_t z1_i = find_nearest(zeros, used_z, n, &p1);
+                z1 = zeros[z1_i];
                 used_z[z1_i] = 1;
                 n_z--;
 
@@ -496,49 +491,49 @@ uint8_t zpk2sos(const complex_t *zeros, const complex_t *poles, uint8_t n,
             }
         } else {
             /* p1 is complex — pair with its conjugate. */
-            claim_conjugate(wp, used_p, n, p1_i, &p2, eps_real);
+            claim_conjugate(poles, used_p, n, p1_i, &p2, eps_real);
             n_p--;
         }
 
         /* 2. Match two zeros to this pole pair. */
-        uint8_t z1_i = find_nearest(wz, used_z, n, &p1);
+        uint8_t z1_i = find_nearest(zeros, used_z, n, &p1);
 
-        if (is_real(&wz[z1_i], eps_real)) {
-            if (count_used(used_z, n, wz, 1, eps_real) > 1) {
+        if (is_real(&zeros[z1_i], eps_real)) {
+            if (count_used(used_z, n, zeros, 1, eps_real) > 1) {
                 /* Two real zeros available — use z1 and the nearest other real. */
-                z1 = wz[z1_i];
+                z1 = zeros[z1_i];
                 used_z[z1_i] = 1;
                 n_z--;
 
-                uint8_t z2_i = find_nearest(wz, used_z, n, &p1);
-                z2 = wz[z2_i];
+                uint8_t z2_i = find_nearest(zeros, used_z, n, &p1);
+                z2 = zeros[z2_i];
                 used_z[z2_i] = 1;
                 n_z--;
             } else {
                 /* Only one real zero left — save it for a later 1st-order
                    section and use a complex pair instead. */
                 uint8_t best_i = z1_i;
-                float best_d = INFINITY;
+                float best_d = 1e30f;
                 for (uint8_t i = 0; i < n; i++) {
                     if (used_z[i]) continue;
-                    if (is_real(&wz[i], eps_real)) continue;
-                    float d = c_dist(&wz[i], &p1);
+                    if (is_real(&zeros[i], eps_real)) continue;
+                    float d = c_dist(&zeros[i], &p1);
                     if (d < best_d) { best_d = d; best_i = i; }
                 }
-                z1 = wz[best_i];
+                z1 = zeros[best_i];
                 used_z[best_i] = 1;
                 n_z--;
 
-                claim_conjugate(wz, used_z, n, best_i, &z2, eps_real);
+                claim_conjugate(zeros, used_z, n, best_i, &z2, eps_real);
                 n_z--;
             }
         } else {
             /* z1 is complex — use it and its conjugate. */
-            z1 = wz[z1_i];
+            z1 = zeros[z1_i];
             used_z[z1_i] = 1;
             n_z--;
 
-            claim_conjugate(wz, used_z, n, z1_i, &z2, eps_real);
+            claim_conjugate(zeros, used_z, n, z1_i, &z2, eps_real);
             n_z--;
         }
 
@@ -570,4 +565,16 @@ uint8_t zpk2sos(const complex_t *zeros, const complex_t *poles, uint8_t n,
     sos[0][2] *= k;
 
     return section;
+}
+
+uint8_t zpk2sos(const complex_t *zeros, const complex_t *poles, uint8_t n,
+                float (*sos)[6], float k)
+{
+    if (n == 0 || n > ZPK2SOS_MAX_N) return 0;
+
+    complex_t wz[ZPK2SOS_MAX_N], wp[ZPK2SOS_MAX_N];
+    memcpy(wp, poles, n * sizeof(complex_t));
+    memcpy(wz, zeros, n * sizeof(complex_t));
+
+    return zpk2sos_impl(wz, wp, n, sos, k);
 }

@@ -122,14 +122,8 @@ static uint8_t butter_design(biquad_filter_t *sections,
         return 0;
     }
 
-    /* 3. Bilinear gain (on s-domain zp). */
-    {
-        complex_t z_analog[BUTTER_MAX_NP];
-        complex_t p_analog[BUTTER_MAX_NP];
-        memcpy(z_analog, zeros, (size_t)nz * sizeof(complex_t));
-        memcpy(p_analog, poles, (size_t)np * sizeof(complex_t));
-        k = bilinear_zpk_gain(k, z_analog, nz, p_analog, np, 2.0f * fs);
-    }
+    /* 3. Bilinear gain (on s-domain zp, before bilinear transform clobbers them). */
+    k = bilinear_zpk_gain(k, zeros, nz, poles, np, 2.0f * fs);
 
     /* 4. Bilinear transform: s → z */
     bilinear_transform(poles, np, fs);
@@ -149,7 +143,7 @@ static uint8_t butter_design(biquad_filter_t *sections,
     if (ns > max_sections) return 0;
 
     float sos[BUTTER_MAX_NS][6];
-    uint8_t n_sections = zpk2sos(zeros, poles, np, sos, k);
+    uint8_t n_sections = zpk2sos_impl(zeros, poles, np, sos, k);
     if (n_sections > max_sections) return 0;
 
     /* 6. Deploy to biquad sections. */

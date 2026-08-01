@@ -12,6 +12,15 @@ cd build && ctest --output-on-failure
 
 `BUILD_TESTS` 默认 ON。库为静态归档 (`libdigital_filters.a`)。
 
+### MCU / 嵌入式 使用注意事项
+
+**FPU 要求**: 所有滤波器 `_update` 路径执行密集 float 运算。建议使用带硬件 FPU 的 MCU（Cortex-M4/M7 及以上）。
+
+**栈需求**: init 期间峰值约 800 字节（`butter_design`/`cheby_design` → `zpk2sos` 调用链）。运行时 `_update` 为全 inline，无额外栈开销。建议 MCU 主栈 ≥ 2 KB。
+
+**中断安全**: `_update` 和 `_reset` 不可重入。同一个滤波器结构体如果被 ISR 和主循环共享，需在调用 `_update` 前关中断或使用双缓冲。
+
+
 ## 架构
 
 这是一个面向 **MCU / 嵌入式** 的 **IIR 数字滤波器库**，纯 C，基于 **双二阶 (biquad)** 滤波器及其级联（SOS，二阶节）构成高阶滤波器。所有滤波器采用 **Direct Form II（规范型）**。**零 `malloc`，零 `double`，全部 `float`。**

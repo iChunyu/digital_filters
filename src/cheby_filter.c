@@ -8,7 +8,8 @@
 
 static void cheby1_proto(complex_t *poles, uint8_t n, float epsilon)
 {
-    float mu = asinhf(1.0f / epsilon) / (float)n;
+    float inv_eps = 1.0f / epsilon;
+    float mu = logf(inv_eps + sqrtf(inv_eps * inv_eps + 1.0f)) / (float)n;
     float sinh_mu = sinhf(mu);
     float cosh_mu = coshf(mu);
 
@@ -26,7 +27,8 @@ static void cheby1_proto(complex_t *poles, uint8_t n, float epsilon)
 static uint8_t cheby2_proto(complex_t *poles, complex_t *zeros, uint8_t n,
                              float epsilon)
 {
-    float mu = asinhf(1.0f / epsilon) / (float)n;
+    float inv_eps = 1.0f / epsilon;
+    float mu = logf(inv_eps + sqrtf(inv_eps * inv_eps + 1.0f)) / (float)n;
     float sinh_mu = sinhf(mu);
     float cosh_mu = coshf(mu);
     uint8_t nz = 0;
@@ -119,14 +121,8 @@ static uint8_t cheby_design(biquad_filter_t *sections,
         return 0;
     }
 
-    /* 2. Bilinear gain (on s-domain zp). */
-    {
-        complex_t z_analog[CHEBY_MAX_NP];
-        complex_t p_analog[CHEBY_MAX_NP];
-        memcpy(z_analog, zeros, (size_t)nz * sizeof(complex_t));
-        memcpy(p_analog, poles, (size_t)np * sizeof(complex_t));
-        k = bilinear_zpk_gain(k, z_analog, nz, p_analog, np, 2.0f * fs);
-    }
+    /* 2. Bilinear gain (on s-domain zp, before bilinear transform clobbers them). */
+    k = bilinear_zpk_gain(k, zeros, nz, poles, np, 2.0f * fs);
 
     /* 3. Bilinear transform: s → z */
     bilinear_transform(poles, np, fs);
@@ -146,7 +142,7 @@ static uint8_t cheby_design(biquad_filter_t *sections,
     if (ns > max_sections) return 0;
 
     float sos[CHEBY_MAX_NS][6];
-    uint8_t n_sections = zpk2sos(zeros, poles, np, sos, k);
+    uint8_t n_sections = zpk2sos_impl(zeros, poles, np, sos, k);
     if (n_sections > max_sections) return 0;
 
     /* 6. Deploy to biquad sections. */
