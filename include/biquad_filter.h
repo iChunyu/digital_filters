@@ -15,6 +15,8 @@
 #ifndef BIQUAD_FILTER_H_
 #define BIQUAD_FILTER_H_
 
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -83,16 +85,21 @@ void biquad_filter_set_empty(biquad_filter_t *filter);
  * @brief Initialise a biquad filter with given z-domain coefficients.
  *
  * Coefficients are normalised so that @p den_z[0] becomes 1.0.
- * If @p den_z[0] is zero, or if the resulting poles lie outside the unit
- * circle (unstable), the filter is silently replaced by a unity pass-through
- * (identity).
+ * If @p den_z[0] is zero or non-finite, any coefficient is non-finite,
+ * the resulting poles lie outside the unit circle (unstable), or the
+ * poles are within a 1e-4 stability margin of the unit circle
+ * (|a2| > 0.9999, or |a1| > 0.9999 for first-order sections), the filter
+ * is silently replaced by a unity pass-through (identity) and 0 is
+ * returned — passthrough is always preferred over divergence.
  *
  * @param[out] filter  Pointer to the filter object.
  * @param[in]  num_z   Numerator coefficients   [b0, b1, b2] in z-domain.
  * @param[in]  den_z   Denominator coefficients [a0, a1, a2] in z-domain.
+ * @return             1 if the filter was deployed, 0 if it fell back
+ *                     to identity.
  */
-void biquad_filter_init(biquad_filter_t *filter, const float num_z[3],
-                        const float den_z[3]);
+uint8_t biquad_filter_init(biquad_filter_t *filter, const float num_z[3],
+                           const float den_z[3]);
 
 /**
  * @brief Process one input sample and return the filtered output.
@@ -162,6 +169,8 @@ float biquad_filter_get_input(const biquad_filter_t *filter);
  *
  * @note If @f$ 1 + a_1 + a_2 = 0 @f$ (e.g. a pure integrator), the
  *       steady-state is undefined; the state is forced to zero in that case.
+ *       A non-finite @p equilibrium also forces the state to zero instead
+ *       of poisoning it with NaN.
  *
  * @param[in,out] filter      Pointer to the filter object.
  * @param[in]     equilibrium  Constant input value at steady-state.

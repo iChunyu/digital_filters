@@ -172,6 +172,33 @@ float bilinear_zpk_gain(float k, const complex_t *z, uint8_t nz,
                          const complex_t *p, uint8_t np, float K);
 
 /**
+ * @brief Compute the combined gain adjustment for an LP/BP frequency
+ *        transform followed by the bilinear transform.
+ *
+ * k = k · s^degree · Re(∏(K − z) / ∏(K − p))  with K = 2·fs.
+ *
+ * Identical to computing zpk_lp_gain/zpk_bp_gain and bilinear_zpk_gain in
+ * sequence, but the s factors are interleaved with the (K − p) divisions so
+ * no intermediate overflows f32 — computing s^degree standalone overflows
+ * for near-Nyquist designs (wc^8 ≈ FLT_MAX) before the ∏(K − p) factors of
+ * the same magnitude can cancel it.
+ *
+ * @param k       Current system gain.
+ * @param s       Scale factor per unit of degree: wc (rad/s) for LP,
+ *                bandwidth ξ (rad/s) for BP.
+ * @param degree  Relative degree = np − nz of the prototype.
+ * @param z       Analog-domain zeros (post frequency transform), nz elements.
+ * @param nz      Number of analog zeros.
+ * @param p       Analog-domain poles (post frequency transform), np elements.
+ * @param np      Number of analog poles.
+ * @param K       Bilinear constant = 2·fs.
+ * @return        Adjusted gain.
+ */
+float bilinear_zpk_gain_scaled(float k, float s, uint8_t degree,
+                               const complex_t *z, uint8_t nz,
+                               const complex_t *p, uint8_t np, float K);
+
+/**
  * @brief Convert z-domain pole/zero arrays to second-order section coefficients.
  *
  * Pairs poles with nearest zeros using the "most unfavorable pole first"
@@ -191,6 +218,11 @@ float bilinear_zpk_gain(float k, const complex_t *z, uint8_t nz,
  * @brief Same as zpk2sos, but works directly on mutable pole/zero arrays
  *        without making internal copies.  The caller's arrays are read but
  *        not modified; ownership tracking uses an internal used[] bitmap.
+ *
+ * Fail-closed: returns 0 if the pole/zero sets are unbalanced, any element
+ * is left unpaired (e.g. a synthesised conjugate), or the sections' roots
+ * do not reproduce the input pole/zero multisets (cross-pair misclaim).
+ * Callers must treat 0 as "design failed → deploy passthrough".
  *
  * This saves ~256 bytes of stack vs. the const-correct zpk2sos wrapper,
  * which is significant on MCUs where zpk2sos is called deep in the init

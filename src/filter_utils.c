@@ -81,6 +81,36 @@ static complex_t c_sqrt(float re, float im)
 
 /* ------------------------------------------------------------------ */
 
+static void c_mul(float *rr, float *ri, float ar, float ai, float br, float bi);
+static void c_div(float *rr, float *ri, float ar, float ai, float br, float bi);
+
+/* Stable roots of s² + B·s + C = 0 (B, C complex): root1 = (−B − √(B²−4C))/2
+   and root2 = C / root1.  The direct formula (−B + √…)/2 cancels
+   catastrophically when |B|² ≫ 4|C| (real prototype poles of wideband
+   BP/BS designs, |xi·p| ≈ √disc): the f32 result carries ~ulp(|B|)/2 of
+   imaginary noise, which then breaks conjugate pairing downstream.
+   Computing the small root as C / root1 avoids the cancellation entirely. */
+static void stable_roots(float B_re, float B_im, float C_re, float C_im,
+                         complex_t *r1, complex_t *r2)
+{
+    float d_re, d_im;
+    c_mul(&d_re, &d_im, B_re, B_im, B_re, B_im);
+    d_re -= 4.0f * C_re;
+    d_im -= 4.0f * C_im;
+    complex_t sd = c_sqrt(d_re, d_im);
+
+    r1->re = 0.5f * (-B_re - sd.re);
+    r1->im = 0.5f * (-B_im - sd.im);
+
+    if (r1->re * r1->re + r1->im * r1->im < 1e-20f) {
+        /* Degenerate large root — fall back to the direct formula. */
+        r2->re = 0.5f * (-B_re + sd.re);
+        r2->im = 0.5f * (-B_im + sd.im);
+    } else {
+        c_div(&r2->re, &r2->im, C_re, C_im, r1->re, r1->im);
+    }
+}
+
 void analog_bp_transform(complex_t *poles, uint8_t *np,
                          complex_t *zeros, uint8_t *nz,
                          float w0, float xi)
@@ -89,43 +119,20 @@ void analog_bp_transform(complex_t *poles, uint8_t *np,
     uint8_t nz_old = *nz;
     float w0_sq = w0 * w0;
 
-    /* Transform poles backward to avoid clobbering. */
+    /* Transform poles backward to avoid clobbering.
+       s → (s² + w0²) / (xi·s)  ⇒  s² − xi·p·s + w0² = 0. */
     for (int i = np_old - 1; i >= 0; i--) {
-        float pr = poles[i].re;
-        float pi = poles[i].im;
-
-        /* disc = (p·xi)² − 4·w0² */
-        float a = xi * pr;
-        float b = xi * pi;
-        float disc_re = a * a - b * b - 4.0f * w0_sq;
-        float disc_im = 2.0f * a * b;
-
-        complex_t sd = c_sqrt(disc_re, disc_im);
-
-        /* p1 = (p·xi + sqrt(disc)) / 2,  p2 = (p·xi − sqrt(disc)) / 2 */
-        poles[2 * i].re     = 0.5f * (a + sd.re);
-        poles[2 * i].im     = 0.5f * (b + sd.im);
-        poles[2 * i + 1].re = 0.5f * (a - sd.re);
-        poles[2 * i + 1].im = 0.5f * (b - sd.im);
+        stable_roots(-xi * poles[i].re, -xi * poles[i].im,
+                     w0_sq, 0.0f,
+                     &poles[2 * i], &poles[2 * i + 1]);
     }
     *np = 2 * np_old;
 
     /* Transform finite zeros with the same formula. */
     for (int i = nz_old - 1; i >= 0; i--) {
-        float zr = zeros[i].re;
-        float zi = zeros[i].im;
-
-        float a = xi * zr;
-        float b = xi * zi;
-        float disc_re = a * a - b * b - 4.0f * w0_sq;
-        float disc_im = 2.0f * a * b;
-
-        complex_t sd = c_sqrt(disc_re, disc_im);
-
-        zeros[2 * i].re     = 0.5f * (a + sd.re);
-        zeros[2 * i].im     = 0.5f * (b + sd.im);
-        zeros[2 * i + 1].re = 0.5f * (a - sd.re);
-        zeros[2 * i + 1].im = 0.5f * (b - sd.im);
+        stable_roots(-xi * zeros[i].re, -xi * zeros[i].im,
+                     w0_sq, 0.0f,
+                     &zeros[2 * i], &zeros[2 * i + 1]);
     }
 
     /* Append (np_old − nz_old) zeros at the origin for infinite prototype zeros.
@@ -145,10 +152,10 @@ void analog_bs_transform(complex_t *poles, uint8_t *np,
 {
     uint8_t np_old = *np;
     uint8_t nz_old = *nz;
-    float xi_sq = xi * xi;
     float w0_sq = w0 * w0;
 
-    /* Transform poles backward.  p_k = (ξ ± √(ξ² − 4·p²·ω₀²)) / (2·p) */
+    /* Transform poles backward.  p → ξ·s / (s² + ω₀²)
+       ⇒  s² − (ξ/p)·s + ω₀² = 0. */
     for (int i = np_old - 1; i >= 0; i--) {
         float pr = poles[i].re;
         float pi = poles[i].im;
@@ -162,27 +169,10 @@ void analog_bs_transform(complex_t *poles, uint8_t *np,
             continue;
         }
 
-        /* disc = ξ² − 4·p²·ω₀² */
-        float p2_re = pr * pr - pi * pi;
-        float p2_im = 2.0f * pr * pi;
-        float disc_re = xi_sq - 4.0f * w0_sq * p2_re;
-        float disc_im =        - 4.0f * w0_sq * p2_im;
-
-        complex_t sd = c_sqrt(disc_re, disc_im);
-
-        /* p1 = (ξ + √disc) / (2·p),  p2 = (ξ − √disc) / (2·p) */
-        /* Division by complex p:  (num) / p = num · conj(p) / |p|² */
-        float inv = 0.5f / mag2;
-
-        float n1_re = xi + sd.re;
-        float n1_im =      sd.im;
-        poles[2 * i].re     = inv * (n1_re * pr + n1_im * pi);
-        poles[2 * i].im     = inv * (n1_im * pr - n1_re * pi);
-
-        float n2_re = xi - sd.re;
-        float n2_im =     -sd.im;
-        poles[2 * i + 1].re = inv * (n2_re * pr + n2_im * pi);
-        poles[2 * i + 1].im = inv * (n2_im * pr - n2_re * pi);
+        float b_re, b_im;
+        c_div(&b_re, &b_im, -xi, 0.0f, pr, pi); /* B = −ξ / p */
+        stable_roots(b_re, b_im, w0_sq, 0.0f,
+                     &poles[2 * i], &poles[2 * i + 1]);
     }
     *np = 2 * np_old;
 
@@ -199,24 +189,10 @@ void analog_bs_transform(complex_t *poles, uint8_t *np,
             continue;
         }
 
-        float z2_re = zr * zr - zi * zi;
-        float z2_im = 2.0f * zr * zi;
-        float disc_re = xi_sq - 4.0f * w0_sq * z2_re;
-        float disc_im =        - 4.0f * w0_sq * z2_im;
-
-        complex_t sd = c_sqrt(disc_re, disc_im);
-
-        float inv = 0.5f / mag2;
-
-        float n1_re = xi + sd.re;
-        float n1_im =      sd.im;
-        zeros[2 * i].re     = inv * (n1_re * zr + n1_im * zi);
-        zeros[2 * i].im     = inv * (n1_im * zr - n1_re * zi);
-
-        float n2_re = xi - sd.re;
-        float n2_im =     -sd.im;
-        zeros[2 * i + 1].re = inv * (n2_re * zr + n2_im * zi);
-        zeros[2 * i + 1].im = inv * (n2_im * zr - n2_re * zi);
+        float b_re, b_im;
+        c_div(&b_re, &b_im, -xi, 0.0f, zr, zi); /* B = −ξ / z */
+        stable_roots(b_re, b_im, w0_sq, 0.0f,
+                     &zeros[2 * i], &zeros[2 * i + 1]);
     }
 
     /* Append 2·(np_old − nz_old) zeros at ±jω₀ for infinite prototype zeros. */
@@ -356,6 +332,46 @@ float bilinear_zpk_gain(float k, const complex_t *z, uint8_t nz,
     return rr;
 }
 
+float bilinear_zpk_gain_scaled(float k, float s, uint8_t degree,
+                               const complex_t *z, uint8_t nz,
+                               const complex_t *p, uint8_t np, float K)
+{
+    /* k · s^degree · ∏(K−z_i) / ∏(K−p_i) in interleaved order so the
+       running product stays bounded.  Computing s^degree standalone
+       overflows f32 for near-Nyquist LP/BP (e.g. wc^8 ≈ FLT_MAX) even
+       though the final k is small — the ∏(K−p) factors are the same size
+       as s (LP: |K−p| ≈ wc) but the cancellation never happens once an
+       intermediate has overflowed.  Pairing each s factor with one
+       (K−p) division keeps the per-step ratio s/|K−p| bounded (~1.03 for
+       wc = 63600, K = 2000). */
+    float rr = k, ri = 0.0f;
+    uint8_t i_s = 0, i_z = 0, i_p = 0;
+
+    while (i_s < degree || i_z < nz || i_p < np) {
+        if (i_s < degree && i_p < np) {
+            c_mul(&rr, &ri, rr, ri, s, 0.0f);
+            c_div(&rr, &ri, rr, ri, K - p[i_p].re, -p[i_p].im);
+            i_s++;
+            i_p++;
+        } else if (i_z < nz && i_p < np) {
+            c_mul(&rr, &ri, rr, ri, K - z[i_z].re, -z[i_z].im);
+            c_div(&rr, &ri, rr, ri, K - p[i_p].re, -p[i_p].im);
+            i_z++;
+            i_p++;
+        } else if (i_s < degree) {
+            c_mul(&rr, &ri, rr, ri, s, 0.0f);
+            i_s++;
+        } else if (i_z < nz) {
+            c_mul(&rr, &ri, rr, ri, K - z[i_z].re, -z[i_z].im);
+            i_z++;
+        } else {
+            c_div(&rr, &ri, rr, ri, K - p[i_p].re, -p[i_p].im);
+            i_p++;
+        }
+    }
+    return rr; /* imaginary part cancels for conjugate pairs */
+}
+
 /* Find index of the pole closest to the unit circle (largest magnitude). */
 static uint8_t find_worst_pole(const complex_t *poles, const uint8_t *used, uint8_t n)
 {
@@ -383,6 +399,26 @@ static uint8_t find_nearest(const complex_t *arr, const uint8_t *used, uint8_t n
         float d = c_dist(&arr[i], target);
         if (d < best) {
             best = d;
+            idx = i;
+        }
+    }
+    return idx;
+}
+
+/* Like find_nearest, restricted to real (want_real=1) or complex elements.
+   Returns nearest distance via *best; 1e30f if no element matches. */
+static uint8_t find_nearest_typed(const complex_t *arr, const uint8_t *used,
+                                  uint8_t n, const complex_t *target,
+                                  int want_real, float eps, float *best)
+{
+    uint8_t idx = 0;
+    *best = 1e30f;
+    for (uint8_t i = 0; i < n; i++) {
+        if (used[i]) continue;
+        if (is_real(&arr[i], eps) != want_real) continue;
+        float d = c_dist(&arr[i], target);
+        if (d < *best) {
+            *best = d;
             idx = i;
         }
     }
@@ -429,6 +465,57 @@ static void claim_conjugate(const complex_t *arr, uint8_t *used, uint8_t n,
     out->im = -arr[idx].im;
 }
 
+/* Roots of z² + c1·z + c2.  c2 == 0 → single finite root at −c1 (the
+   second root sits at infinity and is ignored).  Returns the count. */
+static uint8_t poly_roots(float c1, float c2, complex_t roots[2])
+{
+    if (c2 == 0.0f) {
+        roots[0].re = -c1;
+        roots[0].im = 0.0f;
+        return 1;
+    }
+    float disc = c1 * c1 - 4.0f * c2;
+    if (disc >= 0.0f) {
+        float s = sqrtf(disc);
+        roots[0].re = 0.5f * (-c1 + s);
+        roots[0].im = 0.0f;
+        roots[1].re = 0.5f * (-c1 - s);
+        roots[1].im = 0.0f;
+    } else {
+        float im = 0.5f * sqrtf(-disc);
+        roots[0].re = -0.5f * c1;
+        roots[0].im =  im;
+        roots[1].re = -0.5f * c1;
+        roots[1].im = -im;
+    }
+    return 2;
+}
+
+/* True if every root matches a distinct unused element of pool within tol
+   (Euclidean).  A multiset check: members of a tight pair may match either
+   way around, which is harmless — what it rejects is a root that reproduces
+   no input element at all (duplicated pair displacing a real one). */
+static int match_roots(const complex_t *roots, uint8_t nr,
+                       const complex_t *pool, uint8_t n,
+                       uint8_t *matched, float tol)
+{
+    for (uint8_t r = 0; r < nr; r++) {
+        uint8_t bi = n;
+        float best = tol;
+        for (uint8_t i = 0; i < n; i++) {
+            if (matched[i]) continue;
+            float d = c_dist(&roots[r], &pool[i]);
+            if (d < best) {
+                best = d;
+                bi = i;
+            }
+        }
+        if (bi == n) return 0;
+        matched[bi] = 1;
+    }
+    return 1;
+}
+
 /* Maximum number of pole-zero pairs supported by zpk2sos.
  * 8th-order prototype → BP/BS doubles to 16. */
 #define ZPK2SOS_MAX_N 16
@@ -447,7 +534,13 @@ uint8_t zpk2sos_impl(complex_t *zeros, complex_t *poles, uint8_t n,
     uint8_t n_z = n;
     uint8_t section = 0;
     uint8_t max_sections = (n + 1) / 2;
-    const float eps_real = 1e-4f;
+    /* Real/complex classification and conjugate-claim tolerance.  The
+       bilinear transform's f32 rounding can split a conjugate pair by
+       ~2e-4 absolute (near the unit circle, K² − |s|² cancellation), so
+       1e-4 was too tight: a failed claim synthesises a conjugate and the
+       n_p bookkeeping silently loses the real partner.  1e-3 is still far
+       below the separation between distinct pole pairs (≈ 2.0). */
+    const float eps_real = 1e-3f;
 
     while (n_p > 0) {
         /* Safety caps: never exceed allocated rows
@@ -466,13 +559,21 @@ uint8_t zpk2sos_impl(complex_t *zeros, complex_t *poles, uint8_t n,
         if (is_real(&p1, eps_real)) {
             /* p1 is real — try to pair with another real pole. */
             if (count_used(used_p, n, poles, 1, eps_real) > 0) {
-                uint8_t p2_i = find_nearest(poles, used_p, n, &p1);
+                float best;
+                uint8_t p2_i = find_nearest_typed(poles, used_p, n, &p1,
+                                                  1, eps_real, &best);
                 p2 = poles[p2_i];
                 used_p[p2_i] = 1;
                 n_p--;
             } else {
-                /* No more real poles → first-order section with a real zero. */
-                uint8_t z1_i = find_nearest(zeros, used_z, n, &p1);
+                /* No more real poles → first-order section with a real zero.
+                   If no real zero remains, the pole/zero sets are unbalanced;
+                   fail closed rather than flatten a complex zero into a real
+                   one and drop its conjugate from the cascade. */
+                float best;
+                uint8_t z1_i = find_nearest_typed(zeros, used_z, n, &p1,
+                                                  1, eps_real, &best);
+                if (best == 1e30f) return 0;
                 z1 = zeros[z1_i];
                 used_z[z1_i] = 1;
                 n_z--;
@@ -505,7 +606,9 @@ uint8_t zpk2sos_impl(complex_t *zeros, complex_t *poles, uint8_t n,
                 used_z[z1_i] = 1;
                 n_z--;
 
-                uint8_t z2_i = find_nearest(zeros, used_z, n, &p1);
+                float best;
+                uint8_t z2_i = find_nearest_typed(zeros, used_z, n, &p1,
+                                                  1, eps_real, &best);
                 z2 = zeros[z2_i];
                 used_z[z2_i] = 1;
                 n_z--;
@@ -548,6 +651,37 @@ uint8_t zpk2sos_impl(complex_t *zeros, complex_t *poles, uint8_t n,
         sos[section][4] = a[0];
         sos[section][5] = a[1];
         section++;
+    }
+
+    /* 3b. Invariant: every pole and zero must have been claimed.  A
+       synthesised conjugate leaves an unclaimed gap, meaning the n_p/n_z
+       bookkeeping diverged from the arrays and poles/zeros were silently
+       dropped from the cascade (observed: a misplaced near-duplicate
+       section displacing a missing low-Q pair → ~350x resonance).
+       Fail closed instead. */
+    for (uint8_t i = 0; i < n; i++) {
+        if (!used_p[i] || !used_z[i]) return 0;
+    }
+
+    /* 3c. Verify each section's roots reproduce the input pole/zero
+       multisets.  Guards against cross-pair misclaims that leave used[]
+       fully set yet pair the wrong elements together. */
+    {
+        uint8_t matched[ZPK2SOS_MAX_N];
+        float tol = 1e-3f;
+
+        memset(matched, 0, sizeof(matched));
+        for (uint8_t s = 0; s < section; s++) {
+            complex_t roots[2];
+            uint8_t nr = poly_roots(sos[s][4], sos[s][5], roots);
+            if (!match_roots(roots, nr, poles, n, matched, tol)) return 0;
+        }
+        memset(matched, 0, sizeof(matched));
+        for (uint8_t s = 0; s < section; s++) {
+            complex_t roots[2];
+            uint8_t nr = poly_roots(sos[s][1], sos[s][2], roots); /* b0 == 1 */
+            if (!match_roots(roots, nr, zeros, n, matched, tol)) return 0;
+        }
     }
 
     /* 4. Reverse section order: slowest poles last → fastest first. */

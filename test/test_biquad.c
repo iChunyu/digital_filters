@@ -51,6 +51,49 @@ int main(void)
     y = biquad_filter_update(&lpf, 0.5f);
     CHECK(y == 0.5f, "zero den_z[0] falls back to identity");
 
+    /* ── non-finite numerator → identity fallback ─────────────────── */
+
+    float nan_num[3] = {NAN, 1.0f, 1.0f};
+    biquad_filter_t nf;
+    uint8_t rc = biquad_filter_init(&nf, nan_num, num_z);
+    CHECK(rc == 0, "NaN numerator rejected");
+    y = biquad_filter_update(&nf, 0.75f);
+    CHECK(y == 0.75f, "NaN numerator → identity passthrough");
+
+    /* ── infinite leading denominator → identity, not silence ─────────── */
+
+    float inf_den[3] = {INFINITY, 0.0f, 0.0f};
+    rc = biquad_filter_init(&nf, num_z, inf_den);
+    CHECK(rc == 0, "den_z[0] = Inf rejected");
+    y = biquad_filter_update(&nf, 0.5f);
+    CHECK(y == 0.5f, "den_z[0] = Inf → identity passthrough");
+
+    /* ── stability margin: near-unit-circle poles rejected ────────────── */
+
+    float marg_num[3] = {1.0f, 0.0f, 0.0f};
+
+    float marg_den_bad[3] = {1.0f, 0.0f, 0.99999f};   /* a2 just below 1 */
+    rc = biquad_filter_init(&nf, marg_num, marg_den_bad);
+    CHECK(rc == 0, "a2 = 0.99999 rejected (margin)");
+
+    float marg_den_ok[3] = {1.0f, 0.0f, 0.9998f};     /* inside margin */
+    rc = biquad_filter_init(&nf, marg_num, marg_den_ok);
+    CHECK(rc == 1, "a2 = 0.9998 accepted");
+
+    float marg1_bad[3] = {1.0f, 0.99999f, 0.0f};      /* 1st-order |a1| ~ 1 */
+    rc = biquad_filter_init(&nf, marg_num, marg1_bad);
+    CHECK(rc == 0, "1st-order |a1| = 0.99999 rejected (margin)");
+
+    /* ── reset with non-finite equilibrium → zero state ───────────────── */
+
+    biquad_filter_t fr;
+    biquad_filter_init(&fr, num_z, den_z);
+    biquad_filter_reset(&fr, NAN);
+    CHECK(fr.w[0] == 0.0f && fr.w[1] == 0.0f && fr.w[2] == 0.0f,
+          "reset(NaN) zeroes the state");
+    y = biquad_filter_get_output(&fr);
+    CHECK(y == 0.0f, "reset(NaN) → zero output");
+
     /* ── get_output / get_input consistency  ──────────────────────── */
 
     float num[3] = {0.2f, 0.4f, 0.2f};

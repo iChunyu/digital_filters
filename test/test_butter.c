@@ -218,6 +218,42 @@ int main(void)
     y = butter_lp_8th_update(&b8, 1.0f);
     CHECK(CLOSE(y, 1.0f, 1e-4f), "LP 8th DC gain ~ 1");
 
+    /* ── Regression: ultra-wideband BP8 (gain chain f32 overflow) ────────
+       Used to overflow (k = xi^8 > FLT_MAX) and fail closed; with the
+       folded gain chain the design must now succeed and match the
+       Butterworth response. ─────────────────────────────────────────────── */
+
+    butter_bp_8th_t bwb;
+    bwb.valid = 0;
+    butter_bp_8th_init(&bwb, 10.0f, 3990.0f, 8000.0f);
+    CHECK(bwb.valid == 1, "BP 8th ultra-wideband now valid");
+    CHECK(bwb.num_sections == 8, "BP 8th ultra-wideband → 8 sections");
+
+    /* DC and Nyquist must be blocked */
+    butter_bp_8th_reset(&bwb, 1.0f);
+    y = butter_bp_8th_update(&bwb, 1.0f);
+    CHECK(CLOSE(y, 0.0f, 1e-3f), "BP 8th ultra-wideband blocks DC");
+
+    /* Passband gain ≈ 1 and band-edge gain ≈ 1/√2 */
+    gn = measure_gain(bwb.sections, bwb.num_sections, bwb.valid, 1000.0f, 8000.0f, 8000);
+    CHECK(CLOSE(gn, 1.0f, 0.05f), "BP 8th ultra-wideband passband gain ~ 1");
+    gn = measure_gain(bwb.sections, bwb.num_sections, bwb.valid, 3990.0f, 8000.0f, 8000);
+    CHECK(CLOSE(gn, 0.707f, 0.05f), "BP 8th ultra-wideband edge gain ~ 0.707");
+
+    /* ── Regression: near-Nyquist LP8 (previously NaN at HEAD) ──────────── */
+
+    butter_lp_8th_t bnn;
+    bnn.valid = 0;
+    butter_lp_8th_init(&bnn, 470.0f, 1000.0f);
+    CHECK(bnn.valid == 1, "LP 8th near-Nyquist now valid");
+
+    butter_lp_8th_reset(&bnn, 1.0f);
+    y = butter_lp_8th_update(&bnn, 1.0f);
+    CHECK(CLOSE(y, 1.0f, 1e-3f), "LP 8th near-Nyquist DC gain ~ 1");
+
+    gn = measure_gain(bnn.sections, bnn.num_sections, bnn.valid, 470.0f, 1000.0f, 8000);
+    CHECK(CLOSE(gn, 0.707f, 0.05f), "LP 8th near-Nyquist edge gain ~ 0.707");
+
     /* ── Struct sizes ─────────────────────────────────────────────────── */
 
     CHECK(sizeof(butter_lp_3rd_t) > sizeof(butter_lp_1st_t),

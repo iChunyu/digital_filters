@@ -64,20 +64,35 @@ butter_lp_2nd_t   cheby1_hp_3rd_t   cheby2_bs_5th_t  ...
 
 **biquad_filter**
 - **系数归一化**: `den_z[0]` 内部始终归一化为 1.0
-- **静默降级为直通**: 分母为零或极点不稳定 → 替换为单位直通 (`H(z)=1`)
-- **稳定性检测**：全部三个 Jury 条件 — `|a2| < 1`, `1 + a1 + a2 > 0`, `1 - a1 + a2 > 0`
+- **静默降级为直通**: 分母为零或非有限、任一系数非有限、极点不稳定或裕量不足
+  → 替换为单位直通 (`H(z)=1`)，`biquad_filter_init` 返回 0。宁可直通也不要发散/静音
+- **稳定性检测**：全部三个 Jury 条件 — `|a2| < 1`, `1 + a1 + a2 > 0`, `1 - a1 + a2 > 0`，
+  外加**裕量检查**：`|a2| > 0.9999` 拒绝（一阶节 `|a1| > 0.9999` 拒绝）。
+  实测合法设计最小裕量 2.8e-3、病理设计（cheby1 rp ≥ 60 dB）≤ 1.3e-5，间隙两个数量级
 - **状态向量 `w[3]`**：Direct Form II，每 biquad 仅需 3 个 `float` 状态
 - **`biquad_filter_update` 为 `static inline`**（header-only）。状态更新与输出计算融合——
   先快照 `w[0]`、`w[1]` 到寄存器，一次性缓存全部 5 个系数，计算完 `w0` 后批量写回状态 + 计算输出
-- **稳态复位**：`w_ss = equilibrium / (1 + a1 + a2)`，分母保证非零
+- **稳态复位**：`w_ss = equilibrium / (1 + a1 + a2)`，分母保证非零；`equilibrium` 非有限时状态清零
 
 **filter_utils（设计时工具）**
 - `complex_t` — `{float re, im}`
 - `prewarp(fd, fs)` — `f_analog = fs/π · tan(π · fd / fs)`
-- `analog_lp/hp/bp/bs_transform` — s 域频率变换
+- `analog_lp/hp/bp/bs_transform` — s 域频率变换。BP/BS 用**稳定二次公式**
+  （小根 = `C / root1`）避免宽频带实极点的大数消减噪声（噪声曾破坏共轭配对）
 - `bilinear_transform` — 原地映射 `z = (2fs + s) / (2fs - s)`
-- 增益追踪全部使用 `float`，交替乘除避免中间溢出
-- `zpk2sos` — "最不利极点优先"配对算法。工作数组 `ZPK2SOS_MAX_N = 48`
+- 增益追踪全部使用 `float`，交替乘除避免中间溢出；LP/BP 的 `s^degree` 因子
+  经 `bilinear_zpk_gain_scaled` 与 `(K−p)` 除法**交错折叠**——近 Nyquist 设计
+  （wc^8 ≈ FLT_MAX）不再先溢出后抵消
+- `zpk2sos` — "最不利极点优先"配对算法，容差 1e-3（须容纳双线性 f32 舍入 ~2e-4）。
+  循环结束强制**不变量**：全部零极点被认领 + 每节根与输入零极点**多重集匹配**，
+  任一失败返回 0 → 调用方直通（曾拦截：误配导致 350× 谐振的静默错误滤波器）
+- 工作数组 `ZPK2SOS_MAX_N = 16`
+
+**设计管线级联校验（butter/cheby_design 部署后）**
+- `k` 必须有限且非零（k=0 会部署出输出恒 0 的"静音"滤波器）
+- 解析级联 DC/Nyquist 增益必须匹配族/类型/阶数奇偶的期望值（scipy 实测校准）：
+  精确结构增益（0/1，由 z=±1 零点保证）窗口 ±0.1；纹波边缘增益
+  （cheby2 偶数阶 `10^(−rs/20)`）窗口 ±0.25。失败 → 整链直通
 
 ### 文件
 
