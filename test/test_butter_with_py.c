@@ -15,10 +15,14 @@
 #define NUM_SAMPLES 2000
 #define INPUT_FREQ  30.0f
 
-int main(void)
+int main(int argc, char **argv)
 {
-    FILE *f = fopen("test_butter_data.csv", "w");
-    if (!f) { perror("test_butter_data.csv"); return 1; }
+    /* Output path via argv[1] so ctest can pin the CSV to the build dir
+       (the Python comparison scripts read from there, never from a stale
+       source-dir copy). */
+    const char *path = (argc > 1) ? argv[1] : "test_butter_data.csv";
+    FILE *f = fopen(path, "w");
+    if (!f) { perror(path); return 1; }
 
     butter_lp_7th_t b_lp;
     butter_hp_7th_t b_hp;
@@ -28,6 +32,14 @@ int main(void)
     butter_hp_7th_init(&b_hp, FC_HP,  FS);
     butter_bp_7th_init(&b_bp, FC1_BP, FC2_BP, FS);
     butter_bs_7th_init(&b_bs, FC1_BP, FC2_BP, FS);
+
+    /* A fully fail-closed (all-passthrough) build must NOT emit a
+       plausible CSV that then validates stale comparisons. */
+    if (!(b_lp.valid && b_hp.valid && b_bp.valid && b_bs.valid)) {
+        fprintf(stderr, "butter 7th design failed (valid=0) — refusing to emit CSV\n");
+        fclose(f);
+        return 1;
+    }
 
     float first = cosf(0.0f);
     butter_lp_7th_reset(&b_lp, first);

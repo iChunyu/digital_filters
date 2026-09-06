@@ -106,6 +106,55 @@ int main(void)
     float out = biquad_filter_get_output(&f);
     float in  = biquad_filter_get_input(&f);
     CHECK(CLOSE(in, x, 1e-6f), "get_input reconstructs x[n]");
+    CHECK(CLOSE(out, 0.2f * x, 1e-6f), "get_output matches y[n] = b0·x");
+
+    /* ── margin symmetry: real pairs of opposite sign rejected too ────────
+       A one-sided a2 > 0.9999 check missed a2 ≈ −0.99995 (real poles
+       ±0.99997) and product-based checks are blind to a dominant pole of
+       an unequal real pair. ──────────────────────────────────────────────── */
+
+    float marg_den_neg[3] = {1.0f, 0.0f, -0.99999f};   /* real pair ±0.999995 */
+    rc = biquad_filter_init(&nf, marg_num, marg_den_neg);
+    CHECK(rc == 0, "a2 = -0.99999 rejected (real pair, symmetric margin)");
+
+    float dom_num[3] = {1.0f, 0.0f, 0.0f};
+    /* poles 0.999999 and 0.85: a2 = 0.85 passes a product-based check,
+       and the Jury sum 1 + a1 + a2 = 1e-6 is positive — only the radius
+       check on the dominant pole can reject this. */
+    float dom_den[3] = {1.0f, -1.849999f, 0.85f};
+    rc = biquad_filter_init(&nf, dom_num, dom_den);
+    CHECK(rc == 0, "dominant pole 0.999999 rejected (product a2=0.85 blind spot)");
+
+    /* ── reset on a pure integrator (1 + a1 + a2 == 0) ───────────────────
+       The @note contract: no steady state exists, the state must be forced
+       to zero — never inf/NaN.  biquad_filter_reset is public API on a
+       public struct; coefficients need not have passed init. ──────────── */
+
+    biquad_filter_t integ;
+    biquad_filter_set_empty(&integ);
+    integ.den_z[1] = -1.0f;    /* H(z) = 1 / (1 - z^-1): pole at z = 1 */
+    biquad_filter_reset(&integ, 1.0f);
+    CHECK(integ.w[0] == 0.0f && integ.w[1] == 0.0f && integ.w[2] == 0.0f,
+          "reset(integrator) forces zero state (not inf)");
+    y = biquad_filter_update(&integ, 0.5f);
+    CHECK(isfinite(y), "integrator update stays finite after guarded reset");
+
+    /* ── non-finite input poisons state (documented hot-path semantics) ──
+       The per-sample update deliberately has no NaN guard (branch cost on
+       the MCU hot path); a NaN input propagates until reset recovers. ──── */
+
+    biquad_filter_t ns;
+    biquad_filter_init(&ns, num, den);
+    biquad_filter_reset(&ns, 0.0f);
+    y = biquad_filter_update(&ns, 1.0f);
+    CHECK(CLOSE(y, 0.2f, 1e-6f), "NaN-poison test: sane state before");
+    y = biquad_filter_update(&ns, NAN);
+    CHECK(isnan(y), "NaN input → NaN output (no hot-path guard)");
+    y = biquad_filter_update(&ns, 1.0f);
+    CHECK(isnan(y), "NaN input poisons subsequent samples");
+    biquad_filter_reset(&ns, 0.0f);
+    y = biquad_filter_update(&ns, 1.0f);
+    CHECK(CLOSE(y, 0.2f, 1e-6f), "reset recovers from NaN-poisoned state");
 
     /* ── report ───────────────────────────────────────────────────── */
 

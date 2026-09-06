@@ -8,6 +8,7 @@ Usage:
 """
 
 import os
+import sys
 import numpy as np
 from scipy import signal
 import matplotlib.pyplot as plt
@@ -33,8 +34,9 @@ FILTER_CONFIGS = [
 ]
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-CSV_FILE = os.path.join(SCRIPT_DIR, "test_cheby_data.csv")
-BIN_FILE = os.path.join(SCRIPT_DIR, "test_cheby_with_py")
+DATA_DIR = sys.argv[1] if len(sys.argv) > 1 else SCRIPT_DIR
+CSV_FILE = os.path.join(DATA_DIR, "test_cheby_data.csv")
+BIN_FILE = os.path.join(DATA_DIR, "test_cheby_with_py")
 
 
 def ensure_csv():

@@ -1,10 +1,25 @@
 #!/usr/bin/env python3
-"""Compare C filter CSV output against scipy reference — skip transients."""
+"""Compare C filter CSV output against scipy reference — skip transients.
+
+Usage: compare_scipy.py [csv_dir]
+
+csv_dir defaults to this script's directory; ctest passes the build dir
+where the C generators wrote their CSVs, so a stale source-dir copy can
+never shadow a fresh run.  Exits with code 77 (ctest SKIP) when numpy or
+scipy is not installed.
+"""
 import os
-import numpy as np
-from scipy import signal
+import sys
+
+try:
+    import numpy as np
+    from scipy import signal
+except ImportError:
+    print("SKIP: numpy/scipy not installed")
+    sys.exit(77)
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = sys.argv[1] if len(sys.argv) > 1 else SCRIPT_DIR
 FS = 400.0
 
 def check_correctness(label, data, col, sos, x):
@@ -22,7 +37,7 @@ def check_correctness(label, data, col, sos, x):
 print("=" * 60)
 print("BUTTERWORTH (ORDER=7, fc=50/20/20-50 Hz, fs=400 Hz)")
 print("=" * 60)
-csv_b = os.path.join(SCRIPT_DIR, "test_butter_data.csv")
+csv_b = os.path.join(DATA_DIR, "test_butter_data.csv")
 if os.path.isfile(csv_b):
     data_b = np.genfromtxt(csv_b, delimiter=',', names=True)
     x = data_b['input']
@@ -42,7 +57,7 @@ else:
 print("\n" + "=" * 60)
 print("CHEBYSHEV (ORDER=7, fs=400 Hz)")
 print("=" * 60)
-csv_c = os.path.join(SCRIPT_DIR, "test_cheby_data.csv")
+csv_c = os.path.join(DATA_DIR, "test_cheby_data.csv")
 if os.path.isfile(csv_c):
     data_c = np.genfromtxt(csv_c, delimiter=',', names=True)
     x = data_c['input']

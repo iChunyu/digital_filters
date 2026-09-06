@@ -97,13 +97,19 @@ FOR_EACH_BUTTER_BP_ORDER
 FOR_EACH_BUTTER_BP_ORDER
 #undef X
 
-/* ── Per-order update / reset declarations ────────────────────────────── */
+/* ── Per-order update / reset (static inline — MCU hot path) ──────────── */
 
 /**
  * @brief Process one sample through a statically-allocated Butterworth filter.
  *
  * Functions follow the naming convention butter_{lp,hp,bp,bs}_{1st..8th}_update.
  * If the filter is invalid (!valid), returns @p input unchanged (passthrough).
+ *
+ * Defined static inline with the section count passed as a compile-time
+ * literal: the per-sample path compiles to the biquad loop with no
+ * function call, no runtime section-count load and no link-time symbol
+ * (96 near-identical out-of-line copies would otherwise cost ~12.8 KB of
+ * flash plus a call frame per sample).
  *
  * @param[in,out] f      Pointer to the filter struct.
  * @param[in]     input  Current input sample.
@@ -122,29 +128,61 @@ FOR_EACH_BUTTER_BP_ORDER
 
 /* Lowpass */
 #define X(order, ns, ol) \
-    float butter_lp_##ol##_update(butter_lp_##ol##_t *f, float input); \
-    void  butter_lp_##ol##_reset(butter_lp_##ol##_t *f, float equilibrium);
+    static inline float butter_lp_##ol##_update(butter_lp_##ol##_t *f, float input) \
+    { \
+        if (!f->valid) return input; \
+        return biquad_cascade_update(f->sections, ns, input); \
+    } \
+    static inline void butter_lp_##ol##_reset(butter_lp_##ol##_t *f, float equilibrium) \
+    { \
+        if (!f->valid) return; \
+        biquad_cascade_reset(f->sections, ns, equilibrium); \
+    }
 FOR_EACH_BUTTER_LP_ORDER
 #undef X
 
 /* Highpass */
 #define X(order, ns, ol) \
-    float butter_hp_##ol##_update(butter_hp_##ol##_t *f, float input); \
-    void  butter_hp_##ol##_reset(butter_hp_##ol##_t *f, float equilibrium);
+    static inline float butter_hp_##ol##_update(butter_hp_##ol##_t *f, float input) \
+    { \
+        if (!f->valid) return input; \
+        return biquad_cascade_update(f->sections, ns, input); \
+    } \
+    static inline void butter_hp_##ol##_reset(butter_hp_##ol##_t *f, float equilibrium) \
+    { \
+        if (!f->valid) return; \
+        biquad_cascade_reset(f->sections, ns, equilibrium); \
+    }
 FOR_EACH_BUTTER_LP_ORDER
 #undef X
 
 /* Bandpass */
 #define X(order, ns, ol) \
-    float butter_bp_##ol##_update(butter_bp_##ol##_t *f, float input); \
-    void  butter_bp_##ol##_reset(butter_bp_##ol##_t *f, float equilibrium);
+    static inline float butter_bp_##ol##_update(butter_bp_##ol##_t *f, float input) \
+    { \
+        if (!f->valid) return input; \
+        return biquad_cascade_update(f->sections, ns, input); \
+    } \
+    static inline void butter_bp_##ol##_reset(butter_bp_##ol##_t *f, float equilibrium) \
+    { \
+        if (!f->valid) return; \
+        biquad_cascade_reset(f->sections, ns, equilibrium); \
+    }
 FOR_EACH_BUTTER_BP_ORDER
 #undef X
 
 /* Bandstop */
 #define X(order, ns, ol) \
-    float butter_bs_##ol##_update(butter_bs_##ol##_t *f, float input); \
-    void  butter_bs_##ol##_reset(butter_bs_##ol##_t *f, float equilibrium);
+    static inline float butter_bs_##ol##_update(butter_bs_##ol##_t *f, float input) \
+    { \
+        if (!f->valid) return input; \
+        return biquad_cascade_update(f->sections, ns, input); \
+    } \
+    static inline void butter_bs_##ol##_reset(butter_bs_##ol##_t *f, float equilibrium) \
+    { \
+        if (!f->valid) return; \
+        biquad_cascade_reset(f->sections, ns, equilibrium); \
+    }
 FOR_EACH_BUTTER_BP_ORDER
 #undef X
 

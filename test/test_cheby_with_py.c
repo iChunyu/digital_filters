@@ -17,10 +17,14 @@
 #define NUM_SAMPLES      2000
 #define INPUT_FREQ       30.0f
 
-int main(void)
+int main(int argc, char **argv)
 {
-    FILE *f = fopen("test_cheby_data.csv", "w");
-    if (!f) { perror("test_cheby_data.csv"); return 1; }
+    /* Output path via argv[1] so ctest can pin the CSV to the build dir
+       (the Python comparison scripts read from there, never from a stale
+       source-dir copy). */
+    const char *path = (argc > 1) ? argv[1] : "test_cheby_data.csv";
+    FILE *f = fopen(path, "w");
+    if (!f) { perror(path); return 1; }
 
     /* Chebyshev I */
     cheby1_lp_7th_t c1_lp;
@@ -41,6 +45,15 @@ int main(void)
     cheby2_hp_7th_init(&c2_hp, FC_HP,  FS, CHEBY2_RIPPLE_DB);
     cheby2_bp_7th_init(&c2_bp, FC1_BP, FC2_BP, FS, CHEBY2_RIPPLE_DB);
     cheby2_bs_7th_init(&c2_bs, FC1_BP, FC2_BP, FS, CHEBY2_RIPPLE_DB);
+
+    /* A fully fail-closed (all-passthrough) build must NOT emit a
+       plausible CSV that then validates stale comparisons. */
+    if (!(c1_lp.valid && c1_hp.valid && c1_bp.valid && c1_bs.valid
+          && c2_lp.valid && c2_hp.valid && c2_bp.valid && c2_bs.valid)) {
+        fprintf(stderr, "cheby 7th design failed (valid=0) — refusing to emit CSV\n");
+        fclose(f);
+        return 1;
+    }
 
     float first = cosf(0.0f);
     cheby1_lp_7th_reset(&c1_lp, first); cheby1_hp_7th_reset(&c1_hp, first);

@@ -15,11 +15,13 @@ static int failures = 0;
 
 #define CLOSE(a, b, eps) (fabsf((a) - (b)) <= (eps))
 
-/* Run a tone through the filter and measure steady-state amplitude. */
+/* Run a tone through the filter and measure steady-state amplitude.
+   Returns 1.0f for an invalid filter — a passthrough deployment must
+   FAIL attenuation checks, not pass them vacuously with 0.0f. */
 static float measure_gain(biquad_filter_t *sections, uint8_t ns, uint8_t valid,
                           float freq, float fs, int steps)
 {
-    if (!valid) return 0.0f;
+    if (!valid) return 1.0f;
 
     float x = 0.0f;
     for (uint8_t i = 0; i < ns; i++) {
@@ -44,6 +46,32 @@ static float measure_gain(biquad_filter_t *sections, uint8_t ns, uint8_t valid,
     return max_out;
 }
 
+/* Steady-state amplitude for the Nyquist tone (alternating ±1).
+   NOTE: a sine at exactly fs/2 evaluates to sin(π·n) ≡ 0 in f32 — that
+   stimulus passes through ANY filter vacuously.  The alternating ±1
+   square wave is the real Nyquist signal. */
+static float measure_nyquist_gain(biquad_filter_t *sections, uint8_t ns,
+                                  uint8_t valid, int steps)
+{
+    if (!valid) return 1.0f;
+
+    for (uint8_t i = 0; i < ns; i++) {
+        biquad_filter_reset(&sections[i], 0.0f);
+    }
+
+    float max_out = 0.0f;
+    for (int n = 0; n < steps; n++) {
+        float x = (n % 2 == 0) ? 1.0f : -1.0f;
+        for (uint8_t i = 0; i < ns; i++) {
+            x = biquad_filter_update(&sections[i], x);
+        }
+        if (n > steps / 2 && fabsf(x) > max_out) {
+            max_out = fabsf(x);
+        }
+    }
+    return max_out;
+}
+
 int main(void)
 {
     float y;
@@ -63,7 +91,7 @@ int main(void)
     CHECK(CLOSE(y, 1.0f, 1e-4f), "LP 2nd DC gain ~ 1");
 
     /* Attenuation at Nyquist (10 Hz) */
-    float gn = measure_gain(blp.sections, blp.num_sections, blp.valid, 10.0f, 20.0f, 400);
+    float gn = measure_nyquist_gain(blp.sections, blp.num_sections, blp.valid, 400);
     CHECK(gn < 0.15f, "LP 2nd Nyquist attenuation");
 
     /* ── HP 2nd order, fc=5 Hz, fs=40 Hz ──────────────────────────────── */
@@ -154,7 +182,7 @@ int main(void)
     CHECK(CLOSE(gn, 1.0f, 0.1f), "BP 2nd centre freq gain ~ 1");
 
     /* Out-of-band attenuation at Nyquist */
-    gn = measure_gain(bbp.sections, bbp.num_sections, bbp.valid, 20.0f, 40.0f, 800);
+    gn = measure_nyquist_gain(bbp.sections, bbp.num_sections, bbp.valid, 800);
     CHECK(gn < 0.15f, "BP 2nd Nyquist attenuation");
 
     /* ── BP 1st-order → 1 section ─────────────────────────────────────── */
@@ -253,6 +281,50 @@ int main(void)
 
     gn = measure_gain(bnn.sections, bnn.num_sections, bnn.valid, 470.0f, 1000.0f, 8000);
     CHECK(CLOSE(gn, 0.707f, 0.05f), "LP 8th near-Nyquist edge gain ~ 0.707");
+
+    /* ── Regression: wide-band BP with near-real pole pairs ────────────────
+       The f32 Jury sum 1 + a1 + a2 used to cancel to EXACTLY 0.0f for
+       orders 4/5/8 (poles ~2.5e-4 from z=1) and reject the design while
+       orders 1-3 passed; a too-loose real/complex classification then
+       cross-paired the near-real pairs into sections with a pole exactly
+       at z = 1.  Both fixed. ─────────────────────────────────────────────── */
+
+    butter_bp_4th_t bwb4; bwb4.valid = 0;
+    butter_bp_4th_init(&bwb4, 5.0f, 20000.0f, 48000.0f);
+    CHECK(bwb4.valid == 1, "BP 4th (5,20000,48k) valid (Jury/pairing)");
+
+    butter_bp_5th_t bwb5; bwb5.valid = 0;
+    butter_bp_5th_init(&bwb5, 5.0f, 20000.0f, 48000.0f);
+    CHECK(bwb5.valid == 1, "BP 5th (5,20000,48k) valid (Jury/pairing)");
+
+    butter_bp_8th_t bwb8; bwb8.valid = 0;
+    butter_bp_8th_init(&bwb8, 5.0f, 20000.0f, 48000.0f);
+    CHECK(bwb8.valid == 1, "BP 8th (5,20000,48k) valid (Jury/pairing)");
+
+    /* ── Regression: narrow-but-representable LP accepted, ultra-narrow
+          (pole within the 5e-5 margin of z=1) rejected fail-closed ─────── */
+
+    butter_lp_2nd_t blp6; blp6.valid = 0;
+    butter_lp_2nd_init(&blp6, 6.0f, 48000.0f);
+    CHECK(blp6.valid == 1, "LP 2nd fc=6Hz@48k accepted (Jury f32 residual)");
+
+    butter_lp_2nd_t blp1; blp1.valid = 0;
+    butter_lp_2nd_init(&blp1, 1.0f, 48000.0f);
+    CHECK(blp1.valid == 0, "LP 2nd fc=1Hz@48k rejected (pole margin 5e-5)");
+    y = butter_lp_2nd_update(&blp1, 0.5f);
+    CHECK(y == 0.5f, "LP 2nd fc=1Hz passthrough");
+
+    /* ── Regression: near-Nyquist band edges — inside the pole margin the
+          design deploys; past it the design is rejected deterministically
+          (no NaN garbage, no acceptance cliff between adjacent specs) ──── */
+
+    butter_bs_1st_t bbs_ok; bbs_ok.valid = 0;
+    butter_bs_1st_init(&bbs_ok, 100.0f, 23990.0f, 48000.0f);
+    CHECK(bbs_ok.valid == 1, "BS 1st (100,23990,48k) accepted (pole r=0.992)");
+
+    butter_bs_1st_t bbs_x; bbs_x.valid = 0;
+    butter_bs_1st_init(&bbs_x, 100.0f, 23999.8f, 48000.0f);
+    CHECK(bbs_x.valid == 0, "BS 1st (100,23999.8,48k) rejected (pole r=0.99997)");
 
     /* ── Struct sizes ─────────────────────────────────────────────────── */
 

@@ -38,7 +38,8 @@ cmake --build build
 cd build && ctest --output-on-failure
 ```
 
-预期输出：**3 项测试全部通过**。
+预期输出：**6 项测试全部通过**（前 3 项为 C 单元/回归测试；后 3 项为 CSV
+生成 + scipy 黄金参考对比，未安装 numpy/scipy 时自动 SKIP）。
 
 ### 基本用法
 
@@ -48,6 +49,12 @@ cd build && ctest --output-on-failure
 // 二阶低通，截止 2 Hz，采样 20 Hz
 butter_lp_2nd_t filter;
 butter_lp_2nd_init(&filter, 2.0f, 20.0f);
+
+// 必须检查 valid：设计失败时滤波器是直通（H(z)=1），
+// update 会原样返回输入。宁可直接过，也不要发散的输出。
+if (!filter.valid) {
+    // 按产品策略处理：换参数重试 / 报错 / 继续跑直通
+}
 
 // 跳过烦人的起振瞬态
 butter_lp_2nd_reset(&filter, 1.0f);
@@ -127,13 +134,14 @@ float y = cheby2_hp_2nd_update(&c2, x);
 
 ## 与 scipy 的对比验证
 
-C 代码生成 CSV → scipy 做黄金参考 → 对比稳态精度（跳过瞬态取最后 10%）：
+C 代码生成 CSV → scipy 做黄金参考 → 对比稳态精度（跳过瞬态取最后 10%，
+已注册进 ctest，装好 numpy/scipy 即自动运行）：
 
 | 滤波器 | LP | HP | BP | BS |
 |---|---|---|---|---|
-| Butterworth | 0.9e-6 | 2.1e-6 | 3.2e-6 | 1.1e-6 |
-| Chebyshev I | 1.2e-6 | 3.6e-6 | 1.5e-5 | 3.7e-5 |
-| Chebyshev II | 1.4e-6 | 3.2e-6 | 4.5e-6 | 1.0e-6 |
+| Butterworth | 0.9e-6 | 2.1e-6 | 2.7e-6 | 1.1e-6 |
+| Chebyshev I | 1.2e-6 | 3.6e-6 | 1.5e-5 | 1.1e-5 |
+| Chebyshev II | 1.7e-6 | 2.1e-6 | 2.5e-6 | 1.1e-6 |
 
 > C 的 `reset(equilibrium)` 和 scipy 的零初态起点不同，前面几百个采样对不上是
 > 正常的（瞬态响应差异）。上表取的是稳态数据。
@@ -143,33 +151,62 @@ C 代码生成 CSV → scipy 做黄金参考 → 对比稳态精度（跳过瞬�
 ### MCU 使用
 
 - **零 `malloc`**：`<stdlib.h>` 不需要，堆管理器关掉照样跑
-- Butterworth init **不调 `cosf`/`sinf`**（ROM 查表），`libm` 不是必需品
-- Chebyshev init 需 `asinhf`/`sinhf`/`coshf`（仅 init 一次，非逐采样）
-- `biquad_filter_update` 是 `static inline`，编译器直接内联——没有函数调用开销
+- Butterworth init **不调 `cosf`/`sinf`**（ROM 查表）；`biquad_filter_init`
+  / `update` 路径**完全不依赖 libm**（裕量检查为纯乘加代数形式）——
+  裸机固件不链 libm 也能用 biquad 层
+- Chebyshev init 需 `logf`/`sqrtf`/`sinhf`/`coshf`（仅 init 一次，非逐采样）
+- `_update`/`_reset` 全部为**头文件 `static inline`**：每样本路径是带字面量
+  节数的 biquad 级联循环，没有函数调用、没有运行时节数装载
 - 全部 `float`，零 `double`
+- **flash 粒度**：库以 `-ffunction-sections/-fdata-sections` 编译，链接时
+  加 `--gc-sections`（或对应链接器选项）后，只拉入实际用到的滤波器族
+  （实测 butter_lp_2nd 单独使用：29.4 KB → 20.9 KB text）
 
-### 参数校验
+### 参数校验与 fail-closed 语义
 
 - 原型阶数 1~8
 - 截止频率 `0 < fc < fs/2`
 - BP/BS 需 `fc1 < fc2` 且 `fc2 < fs/2`
 - Chebyshev 的 `ripple_db` > 0
-- 非法参数 → `valid = 0`，update 直通返回输入
+- 任一校验失败 → `valid = 0`，update 直通返回输入。**调用方必须检查
+  `valid`**——直通是"宁可不过滤也不要错误输出"的兜底，不是静默成功的保证
 
-### 稳定性
+### 稳定性（三层 fail-closed 防线）
 
-- 每节 biquad 过全部三个 Jury 条件
-- 不稳定 → 静默换直通 (`H(z)=1`)，不报错
+1. 每节 biquad：三个 Jury 条件（f32 补偿求和消除窄带设计的误拒；
+   和恰好为 0 = 极点在单位圆上 → 拒绝）
+2. 极点半径裕量：任何极点半径 > 0.99995（距单位圆 < 5e-5，会振铃
+   ≥ 10⁴ 采样）→ 拒绝。按极点半径本身判定（对称覆盖共轭对、异号实根
+   对、非等实根对的主导极点——`a2 = r1·r2` 乘积检查有盲区）
+3. 级联 DC/Nyquist 增益校验：部署后解析 H(0)/H(π) 必须落在期望窗口内
+   （结构增益 ±0.1、纹波边缘 ±0.25）——拦截"稳定但配错对"的静默错误
+   （实测曾拦下 DC 增益 97.9、350× 谐振的错误滤波器）
+
+### 频率包络（设计被拒 = 直通，属预期行为）
+
+- **极窄带 / 近 DC**：极点进入单位圆 5e-5 内会被拒。示例（fs=48 kHz）：
+  LP2 fc ≥ ~1.2 Hz 可用、fc = 1 Hz 被拒；LP1 fc ≥ ~0.45 Hz 可用。
+  不同阶数/族/类型边界不同，以 `valid` 为准
+- **极近 Nyquist**：例如 BS1 [100, 23990]@48k 可用，[100, 23999.8]@48k
+  被拒（极点半径 0.99997）
+- **超宽带 BP/BS**（fc2/fc1 ≳ 1000）：极点贴近 z=1 使内部状态巨大
+  （w ≈ 1/(1+a1+a2)），f32 状态更新的固有噪声把阻带衰减地板抬高到
+  ~−12 dB 量级（本设计类固有，非缺陷）
+- **非有限输入**：NaN/Inf 会毒化状态、持续输出 NaN 直到 reset。热路径
+  刻意不做防护（每样本分支开销）；传感器/不可信数据请在源头清洗
 
 ### 数值精度
 
 - 全 `float`。8 阶以内完全够用，加 double 只增加 ROM/RAM 负担
-- "最不利极点优先"配对策略，减少有限精度舍入噪声
+- "最不利极点优先"配对策略 + 最近共轭认领，减少有限精度舍入噪声
 - 窄带高 Q 场景建议实测评估
+- scipy 对比（ctest 自动跑）：稳态误差 9e-7 ~ 1.5e-5
 
 ## 已知局限
 
 - 原型阶数 8 阶上限（ROM 表 + 结构体枚举的工程约束）
+- f32 系数在极窄带/极近 Nyquist 设计上无法忠实表达（见"频率包络"）——
+  这些设计被 fail-closed 拒绝而不是硬部署
 - 不支持椭圆滤波器（Jacobi 椭圆函数写起来太抽象了，下次一定）
 
 ## 文件结构

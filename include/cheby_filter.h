@@ -144,7 +144,7 @@ FOR_EACH_CHEBY_BP_ORDER
 FOR_EACH_CHEBY_BP_ORDER
 #undef X
 
-/* ── Per-order update / reset declarations ────────────────────────────── */
+/* ── Per-order update / reset (static inline — MCU hot path) ──────────── */
 
 /**
  * @brief Process one sample through a statically-allocated Chebyshev filter.
@@ -152,6 +152,10 @@ FOR_EACH_CHEBY_BP_ORDER
  * Functions follow the naming convention
  * cheby{1,2}_{lp,hp,bp,bs}_{1st..8th}_update.
  * If the filter is invalid (!valid), returns @p input unchanged (passthrough).
+ *
+ * Defined static inline with the section count passed as a compile-time
+ * literal: the per-sample path compiles to the biquad loop with no
+ * function call, no runtime section-count load and no link-time symbol.
  *
  * @param[in,out] f      Pointer to the filter struct.
  * @param[in]     input  Current input sample.
@@ -171,57 +175,121 @@ FOR_EACH_CHEBY_BP_ORDER
 
 /* Chebyshev I — lowpass */
 #define X(order, ns, ol) \
-    float cheby1_lp_##ol##_update(cheby1_lp_##ol##_t *f, float input); \
-    void  cheby1_lp_##ol##_reset(cheby1_lp_##ol##_t *f, float equilibrium);
+    static inline float cheby1_lp_##ol##_update(cheby1_lp_##ol##_t *f, float input) \
+    { \
+        if (!f->valid) return input; \
+        return biquad_cascade_update(f->sections, ns, input); \
+    } \
+    static inline void cheby1_lp_##ol##_reset(cheby1_lp_##ol##_t *f, float equilibrium) \
+    { \
+        if (!f->valid) return; \
+        biquad_cascade_reset(f->sections, ns, equilibrium); \
+    }
 FOR_EACH_CHEBY_LP_ORDER
 #undef X
 
 /* Chebyshev I — highpass */
 #define X(order, ns, ol) \
-    float cheby1_hp_##ol##_update(cheby1_hp_##ol##_t *f, float input); \
-    void  cheby1_hp_##ol##_reset(cheby1_hp_##ol##_t *f, float equilibrium);
+    static inline float cheby1_hp_##ol##_update(cheby1_hp_##ol##_t *f, float input) \
+    { \
+        if (!f->valid) return input; \
+        return biquad_cascade_update(f->sections, ns, input); \
+    } \
+    static inline void cheby1_hp_##ol##_reset(cheby1_hp_##ol##_t *f, float equilibrium) \
+    { \
+        if (!f->valid) return; \
+        biquad_cascade_reset(f->sections, ns, equilibrium); \
+    }
 FOR_EACH_CHEBY_LP_ORDER
 #undef X
 
 /* Chebyshev I — bandpass */
 #define X(order, ns, ol) \
-    float cheby1_bp_##ol##_update(cheby1_bp_##ol##_t *f, float input); \
-    void  cheby1_bp_##ol##_reset(cheby1_bp_##ol##_t *f, float equilibrium);
+    static inline float cheby1_bp_##ol##_update(cheby1_bp_##ol##_t *f, float input) \
+    { \
+        if (!f->valid) return input; \
+        return biquad_cascade_update(f->sections, ns, input); \
+    } \
+    static inline void cheby1_bp_##ol##_reset(cheby1_bp_##ol##_t *f, float equilibrium) \
+    { \
+        if (!f->valid) return; \
+        biquad_cascade_reset(f->sections, ns, equilibrium); \
+    }
 FOR_EACH_CHEBY_BP_ORDER
 #undef X
 
 /* Chebyshev I — bandstop */
 #define X(order, ns, ol) \
-    float cheby1_bs_##ol##_update(cheby1_bs_##ol##_t *f, float input); \
-    void  cheby1_bs_##ol##_reset(cheby1_bs_##ol##_t *f, float equilibrium);
+    static inline float cheby1_bs_##ol##_update(cheby1_bs_##ol##_t *f, float input) \
+    { \
+        if (!f->valid) return input; \
+        return biquad_cascade_update(f->sections, ns, input); \
+    } \
+    static inline void cheby1_bs_##ol##_reset(cheby1_bs_##ol##_t *f, float equilibrium) \
+    { \
+        if (!f->valid) return; \
+        biquad_cascade_reset(f->sections, ns, equilibrium); \
+    }
 FOR_EACH_CHEBY_BP_ORDER
 #undef X
 
 /* Chebyshev II — lowpass */
 #define X(order, ns, ol) \
-    float cheby2_lp_##ol##_update(cheby2_lp_##ol##_t *f, float input); \
-    void  cheby2_lp_##ol##_reset(cheby2_lp_##ol##_t *f, float equilibrium);
+    static inline float cheby2_lp_##ol##_update(cheby2_lp_##ol##_t *f, float input) \
+    { \
+        if (!f->valid) return input; \
+        return biquad_cascade_update(f->sections, ns, input); \
+    } \
+    static inline void cheby2_lp_##ol##_reset(cheby2_lp_##ol##_t *f, float equilibrium) \
+    { \
+        if (!f->valid) return; \
+        biquad_cascade_reset(f->sections, ns, equilibrium); \
+    }
 FOR_EACH_CHEBY_LP_ORDER
 #undef X
 
 /* Chebyshev II — highpass */
 #define X(order, ns, ol) \
-    float cheby2_hp_##ol##_update(cheby2_hp_##ol##_t *f, float input); \
-    void  cheby2_hp_##ol##_reset(cheby2_hp_##ol##_t *f, float equilibrium);
+    static inline float cheby2_hp_##ol##_update(cheby2_hp_##ol##_t *f, float input) \
+    { \
+        if (!f->valid) return input; \
+        return biquad_cascade_update(f->sections, ns, input); \
+    } \
+    static inline void cheby2_hp_##ol##_reset(cheby2_hp_##ol##_t *f, float equilibrium) \
+    { \
+        if (!f->valid) return; \
+        biquad_cascade_reset(f->sections, ns, equilibrium); \
+    }
 FOR_EACH_CHEBY_LP_ORDER
 #undef X
 
 /* Chebyshev II — bandpass */
 #define X(order, ns, ol) \
-    float cheby2_bp_##ol##_update(cheby2_bp_##ol##_t *f, float input); \
-    void  cheby2_bp_##ol##_reset(cheby2_bp_##ol##_t *f, float equilibrium);
+    static inline float cheby2_bp_##ol##_update(cheby2_bp_##ol##_t *f, float input) \
+    { \
+        if (!f->valid) return input; \
+        return biquad_cascade_update(f->sections, ns, input); \
+    } \
+    static inline void cheby2_bp_##ol##_reset(cheby2_bp_##ol##_t *f, float equilibrium) \
+    { \
+        if (!f->valid) return; \
+        biquad_cascade_reset(f->sections, ns, equilibrium); \
+    }
 FOR_EACH_CHEBY_BP_ORDER
 #undef X
 
 /* Chebyshev II — bandstop */
 #define X(order, ns, ol) \
-    float cheby2_bs_##ol##_update(cheby2_bs_##ol##_t *f, float input); \
-    void  cheby2_bs_##ol##_reset(cheby2_bs_##ol##_t *f, float equilibrium);
+    static inline float cheby2_bs_##ol##_update(cheby2_bs_##ol##_t *f, float input) \
+    { \
+        if (!f->valid) return input; \
+        return biquad_cascade_update(f->sections, ns, input); \
+    } \
+    static inline void cheby2_bs_##ol##_reset(cheby2_bs_##ol##_t *f, float equilibrium) \
+    { \
+        if (!f->valid) return; \
+        biquad_cascade_reset(f->sections, ns, equilibrium); \
+    }
 FOR_EACH_CHEBY_BP_ORDER
 #undef X
 

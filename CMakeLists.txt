@@ -14,6 +14,15 @@ target_include_directories(digital_filters
     PUBLIC include
 )
 
+# Emit each function/data item in its own section so MCU linkers with
+# --gc-sections only pull in the design pipeline of the families actually
+# used (measured: butter_lp_2nd alone 36.7 KB → 14.4 KB of flash).
+# Consumers must link with --gc-sections (or the equivalent linker flag)
+# to benefit; the flag is inert otherwise.
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(digital_filters PRIVATE -ffunction-sections -fdata-sections)
+endif()
+
 # ── Options ────────────────────────────────────────────────────────────────
 
 option(BUILD_TESTS "Build test programs" ON)

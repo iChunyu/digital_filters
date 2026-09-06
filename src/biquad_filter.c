@@ -6,6 +6,34 @@
 #include "biquad_filter.h"
 #include <math.h>
 
+/*
+ * Compensated 3-term summation (TwoSum-style).  Naive f32 evaluation of
+ * 1 + a1 + a2 cancels to exactly 0.0f when the true residual is a few ulps
+ * of 1.0 (narrowband designs: a1 ≈ −2, a2 ≈ 1 − ε) — that spuriously
+ * rejects stable filters whose poles sit well inside the unit circle and
+ * equally mis-evaluates the reset denominator.  Folding the rounding error
+ * of each addition back in recovers the residual at f32 cost.
+ */
+static float sum3f(float x, float y, float z)
+{
+    float s = x;
+    float c = 0.0f;
+    float t = s + y;
+    c += (fabsf(s) >= fabsf(y)) ? (s - t) + y : (y - t) + s;
+    s = t;
+    t = s + z;
+    c += (fabsf(s) >= fabsf(z)) ? (s - t) + z : (z - t) + s;
+    s = t;
+    return s + c;
+}
+
+static void biquad_zero_state(biquad_filter_t *filter)
+{
+    filter->w[0] = 0.0f;
+    filter->w[1] = 0.0f;
+    filter->w[2] = 0.0f;
+}
+
 void biquad_filter_set_empty(biquad_filter_t *filter)
 {
     filter->num_z[0] = 1.0f;
@@ -76,28 +104,62 @@ uint8_t biquad_filter_init(biquad_filter_t *filter, const float num_z[3],
      *   1 + a1 + a2 > 0
      *   1 - a1 + a2 > 0
      * If any condition fails the filter is unstable; fall back to identity.
+     * The two Jury sums use compensated summation (see sum3f): naive f32
+     * evaluation cancels to exactly 0.0f for narrowband designs whose true
+     * residual is a few ulps of 1.0, spuriously rejecting stable filters.
+     * A compensated sum of EXACTLY 0.0f, by contrast, means the f32
+     * coefficients place a pole exactly on the unit circle (quantization
+     * has collapsed it onto z = ±1) — that one is genuinely rejectable,
+     * and the margin check below cannot resolve its radius.
      */
     float a1 = filter->den_z[1];
     float a2 = filter->den_z[2];
 
     if (!(a2 > -1.0f && a2 < 1.0f
-          && 1.0f + a1 + a2 > 0.0f
-          && 1.0f - a1 + a2 > 0.0f)) {
+          && sum3f(1.0f, a1, a2) > 0.0f
+          && sum3f(1.0f, -a1, a2) > 0.0f)) {
         biquad_filter_set_empty(filter);
         return 0;
     }
 
     /*
      * Stability margin.  The Jury conditions above accept poles arbitrarily
-     * close to the unit circle; in f32 that means a2 = 1 − 2⁻²⁴ passes and
-     * the filter rings for millions of samples (a ~6e-8 contraction per
-     * sample).  Legitimate designs measured down to 1 − max_r = 2.8e-3
-     * (a2 ≈ 0.994) while degenerate ones (cheby1 rp ≥ 60 dB) sit at
-     * 1 − max_r ≤ 1.3e-5 — a clean two-decade gap.  Reject |a2| > 0.9999
-     * (radius > 0.99995); for 1st-order sections the lone pole is −a1, so
-     * bound |a1| instead.
+     * close to the unit circle; in f32 a2 = 1 − 2⁻²⁴ passes and the filter
+     * rings for millions of samples (~6e-8 contraction per sample).  Reject
+     * any pole with radius r > 0.99995 (1 − r < 5e-5).
+     *
+     * The check is evaluated on the pole radii themselves, not on a2:
+     * a2 = r1·r2 is blind to a dominant pole of an unequal real pair
+     * (r1 ≈ 1, r2 ≈ 0.85 → a2 ≈ 0.85 sails through), and a one-sided
+     * a2 > 0.9999 test misses real pairs of opposite sign (a2 ≈ −0.99995).
+     * For a conjugate pair r² = a2 (so r > 0.99995 ⟺ a2 > 0.9999); for
+     * real roots r_max = (|a1| + √(a1² − 4·a2)) / 2, rearranged so no
+     * sqrtf is needed — the biquad init path must stay callable from
+     * bare-metal firmware that links no libm.  The formula also covers
+     * first-order sections (a2 = 0 → r_max = |a1|).
+     *
+     * a1² − 4·a2 is computed with a Dekker-split compensation: wide-band
+     * BP/BS designs land near-real pole pairs within ~1e-4 of the unit
+     * circle, where the raw f32 discriminant carries ~5e-7 noise while the
+     * true value (e.g. −4·(imag part)² ≈ −1e-7) is no larger — the sign
+     * flip between the conjugate/real branches would turn the margin
+     * decision into a coin toss on legitimate designs.
      */
-    if (a2 > 0.9999f || (a2 == 0.0f && fabsf(a1) > 0.9999f)) {
+    float p = a1 * 4097.0f;          /* Dekker split: a1 = hi + lo */
+    float hi = p - (p - a1);
+    float lo = a1 - hi;
+    float sq = a1 * a1;
+    float err = ((hi * hi - sq) + 2.0f * hi * lo) + lo * lo;
+    float disc = (sq - 4.0f * a2) + err;
+    int reject;
+    if (disc < 0.0f) {
+        reject = a2 > 0.9999f;                 /* conjugate pair: a2 = r² */
+    } else {
+        /* r_max > 0.99995  ⟺  √disc > 1.9999 − |a1|  (squared). */
+        float rhs = 1.9999f - fabsf(a1);
+        reject = (rhs < 0.0f) || (disc > rhs * rhs);
+    }
+    if (reject) {
         biquad_filter_set_empty(filter);
         return 0;
     }
@@ -130,9 +192,7 @@ void biquad_filter_reset(biquad_filter_t *filter, float equilibrium)
      * (the identity filter's own steady state) instead.
      */
     if (!isfinite(equilibrium)) {
-        filter->w[0] = 0.0f;
-        filter->w[1] = 0.0f;
-        filter->w[2] = 0.0f;
+        biquad_zero_state(filter);
         return;
     }
 
@@ -141,11 +201,25 @@ void biquad_filter_reset(biquad_filter_t *filter, float equilibrium)
      * From the state equation:
      *   x = w_ss + a1*w_ss + a2*w_ss  =>  w_ss = x / (1 + a1 + a2)
      *
-     * The denominator is guaranteed non-zero: biquad_filter_init() enforces
-     * 1 + a1 + a2 > 0 via the Jury stability conditions; if init rejects the
-     * coefficients it falls back to the identity filter (a1 = a2 = 0).
+     * This is a public API on a fully public struct — the coefficients need
+     * not have passed biquad_filter_init().  Compensated summation keeps the
+     * f32 evaluation of the denominator from cancelling to exactly 0.0f on
+     * init-valid narrowband filters, and the guards below implement the
+     * @note contract: 1 + a1 + a2 == 0 (e.g. a pure integrator) has no
+     * steady state → force zero; a denormal-tiny denominator would make
+     * w_ss overflow to inf and poison every subsequent update with NaN,
+     * so force zero there too.
      */
-    float w_ss = equilibrium / (1.0f + filter->den_z[1] + filter->den_z[2]);
+    float denom = sum3f(1.0f, filter->den_z[1], filter->den_z[2]);
+    if (denom == 0.0f || !isfinite(denom)) {
+        biquad_zero_state(filter);
+        return;
+    }
+    float w_ss = equilibrium / denom;
+    if (!isfinite(w_ss)) {
+        biquad_zero_state(filter);
+        return;
+    }
     filter->w[0] = w_ss;
     filter->w[1] = w_ss;
     filter->w[2] = w_ss;

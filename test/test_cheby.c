@@ -433,6 +433,43 @@ int main(void)
     FOR_EACH_CHEBY_LP_ORDER
     #undef X
 
+    /* ── Regression: high-Q BS pole cluster — conjugate pairing ───────────
+       claim_conjugate() used to take the FIRST unused pole inside the
+       tolerance box; in this design's pole cluster (~8e-4 inter-pair
+       spacing < 1e-3 box) it stole another pair's mate: sections 6 and 7
+       deployed as EXACT duplicates, a distinct pair was dropped, and the
+       deployed filter measured DC −1.5 dB with a +8.7 dB spur at 98 Hz
+       inside the passband — silently, valid=1. ────────────────────────── */
+
+    cheby1_bs_8th_t c1bs_hiq;
+    c1bs_hiq.valid = 0;
+    cheby1_bs_8th_init(&c1bs_hiq, 100.0f, 200.0f, 48000.0f, 1.0f);
+    CHECK(c1bs_hiq.valid == 1, "cheby1 BS 8th [100,200]@48k valid");
+    if (c1bs_hiq.valid) {
+        int dup = 0;
+        for (int i = 0; i < c1bs_hiq.num_sections && !dup; i++)
+            for (int j = i + 1; j < c1bs_hiq.num_sections && !dup; j++)
+                if (fabsf(c1bs_hiq.sections[i].den_z[1]
+                          - c1bs_hiq.sections[j].den_z[1]) < 1e-6f
+                    && fabsf(c1bs_hiq.sections[i].den_z[2]
+                             - c1bs_hiq.sections[j].den_z[2]) < 1e-6f)
+                    dup = 1;
+        CHECK(!dup, "cheby1 BS 8th [100,200]: no duplicate sections");
+
+        /* Even-order cheby1: DC = 10^(−rp/20) = 0.8913 (was −1.5 dB off). */
+        y = cascade_dc_gain(c1bs_hiq.sections, c1bs_hiq.num_sections);
+        CHECK(CLOSE(y, 0.891251f, 0.02f), "cheby1 BS 8th [100,200]: DC = 10^(-rp/20)");
+
+        /* Passband must stay within the 1 dB ripple bounds (was +8.7 dB). */
+        float hiq_max = 0.0f;
+        for (float hf = 90.0f; hf <= 220.0f; hf += 10.0f) {
+            float g = measure_gain_at(c1bs_hiq.sections, c1bs_hiq.num_sections,
+                                      hf, 48000.0f, 6000);
+            if (g > hiq_max) hiq_max = g;
+        }
+        CHECK(hiq_max < 1.25f, "cheby1 BS 8th [100,200]: passband max gain sane");
+    }
+
     /* ── Report ───────────────────────────────────────────────────────── */
 
     if (failures) {

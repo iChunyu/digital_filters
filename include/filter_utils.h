@@ -3,6 +3,7 @@
 
 #include <math.h>
 #include <stdint.h>
+#include "biquad_filter.h"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846f
@@ -115,18 +116,6 @@ void analog_bs_transform(complex_t *poles, uint8_t *np,
                          float w0, float xi);
 
 /**
- * @brief Compute the gain adjustment for an analog LP→LP frequency transform.
- *
- * k_lp = k * wo^degree  (scipy lp2lp_zpk convention).
- *
- * @param k       Current system gain.
- * @param wo      Target cutoff angular frequency (rad/s).
- * @param degree  Relative degree = np − nz (number of excess poles).
- * @return        Adjusted gain.
- */
-float zpk_lp_gain(float k, float wo, uint8_t degree);
-
-/**
  * @brief Compute the gain adjustment for an analog LP→HP or LP→BS transform.
  *
  * k = k · Re(∏(−z) / ∏(−p))  evaluated on the prototype (pre-transform)
@@ -141,18 +130,6 @@ float zpk_lp_gain(float k, float wo, uint8_t degree);
  */
 float zpk_hp_bs_gain(float k, const complex_t *z, uint8_t nz,
                      const complex_t *p, uint8_t np);
-
-/**
- * @brief Compute the gain adjustment for an analog LP→BP frequency transform.
- *
- * k_bp = k * bw^degree  (scipy lp2bp_zpk convention).
- *
- * @param k       Current system gain.
- * @param bw      Bandwidth ξ (rad/s).
- * @param degree  Relative degree = np − nz.
- * @return        Adjusted gain.
- */
-float zpk_bp_gain(float k, float bw, uint8_t degree);
 
 /**
  * @brief Compute the gain adjustment for the bilinear transform.
@@ -177,9 +154,8 @@ float bilinear_zpk_gain(float k, const complex_t *z, uint8_t nz,
  *
  * k = k · s^degree · Re(∏(K − z) / ∏(K − p))  with K = 2·fs.
  *
- * Identical to computing zpk_lp_gain/zpk_bp_gain and bilinear_zpk_gain in
- * sequence, but the s factors are interleaved with the (K − p) divisions so
- * no intermediate overflows f32 — computing s^degree standalone overflows
+ * The s factors are interleaved with the (K − p) divisions so no
+ * intermediate overflows f32 — computing s^degree standalone overflows
  * for near-Nyquist designs (wc^8 ≈ FLT_MAX) before the ∏(K − p) factors of
  * the same magnitude can cancel it.
  *
@@ -206,33 +182,84 @@ float bilinear_zpk_gain_scaled(float k, float s, uint8_t degree,
  * unity numerator gain; the global system gain @p k is applied to the
  * numerator of the first section only (matching scipy zpk2sos convention).
  *
- * @param[in]  zeros    Array of n z-domain zeros.
- * @param[in]  poles    Array of n z-domain poles.
- * @param[in]  n        Number of poles (must equal number of zeros).
- * @param[out] sos      SOS matrix with ceil(n/2) rows, each [b0,b1,b2, 1,a1,a2].
- *                      Caller must allocate ceil(n/2) rows.
- * @param[in]  k        Overall system gain applied to sos[0] numerator.
- * @return              Number of SOS sections = ceil(n/2).
- */
-/**
- * @brief Same as zpk2sos, but works directly on mutable pole/zero arrays
- *        without making internal copies.  The caller's arrays are read but
- *        not modified; ownership tracking uses an internal used[] bitmap.
+ * Works directly on the caller's mutable pole/zero arrays without making
+ * internal copies (saves ~256 bytes of stack — significant on MCUs where
+ * zpk2sos is called deep in the init call chain); the arrays are read but
+ * not modified, ownership tracking uses an internal used[] bitmap.
  *
  * Fail-closed: returns 0 if the pole/zero sets are unbalanced, any element
  * is left unpaired (e.g. a synthesised conjugate), or the sections' roots
  * do not reproduce the input pole/zero multisets (cross-pair misclaim).
  * Callers must treat 0 as "design failed → deploy passthrough".
  *
- * This saves ~256 bytes of stack vs. the const-correct zpk2sos wrapper,
- * which is significant on MCUs where zpk2sos is called deep in the init
- * call chain (butter_design / cheby_design).
+ * @param[in]  zeros    Array of n z-domain zeros.
+ * @param[in]  poles    Array of n z-domain poles.
+ * @param[in]  n        Number of poles (must equal number of zeros).
+ * @param[out] sos      SOS matrix with ceil(n/2) rows, each [b0,b1,b2, 1,a1,a2].
+ *                      Caller must allocate ceil(n/2) rows.
+ * @param[in]  k        Overall system gain applied to sos[0] numerator.
+ * @return              Number of SOS sections = ceil(n/2), or 0 on failure.
  */
-uint8_t zpk2sos_impl(complex_t *zeros, complex_t *poles, uint8_t n,
-                     float (*sos)[6], float k);
-
-uint8_t zpk2sos(const complex_t *zeros, const complex_t *poles, uint8_t n,
+uint8_t zpk2sos(complex_t *zeros, complex_t *poles, uint8_t n,
                 float (*sos)[6], float k);
+
+/**
+ * @brief Shared IIR design pipeline: analog prototype → frequency
+ *        transform → gain folding → bilinear → zpk2sos → deployment.
+ *
+ * Used by the Butterworth and Chebyshev families (identical pipeline,
+ * different prototypes): Butterworth passes its ROM pole table with
+ * k = 1, nz = 0; Chebyshev computes its prototype at runtime and passes
+ * its own k and finite zeros.  Keeping the pipeline in ONE place means
+ * every fail-closed chokepoint (k finite/nonzero, section-count cap,
+ * per-section init, gain gate) exists exactly once.
+ *
+ * Fail-closed: returns 0 (caller deploys passthrough) on any chokepoint.
+ *
+ * @param[out] sections      Output biquad array.
+ * @param[in]  max_sections  Capacity of @p sections.
+ * @param[in]  type          filter_type_e.
+ * @param[in]  wc1           Pre-warped lower cutoff rad/s (2π·prewarp(fc, fs)).
+ * @param[in]  wc2           Pre-warped upper cutoff rad/s for BP/BS (unused for LP/HP).
+ * @param[in]  fs            Sampling frequency in Hz.
+ * @param[in]  k             Prototype gain.
+ * @param[in]  proto_poles   Prototype poles, np elements (copied).
+ * @param[in]  np            Number of prototype poles.
+ * @param[in]  proto_zeros   Prototype finite zeros, nz elements (may be NULL).
+ * @param[in]  nz            Number of prototype finite zeros.
+ * @return                   Number of sections deployed, or 0 on failure.
+ */
+uint8_t design_filter(biquad_filter_t *sections, uint8_t max_sections,
+                      uint8_t type,
+                      float wc1, float wc2, float fs,
+                      float k,
+                      const complex_t *proto_poles, uint8_t np,
+                      const complex_t *proto_zeros, uint8_t nz);
+
+/**
+ * @brief Analytic cascade-level DC and Nyquist gain check.
+ *
+ * Wrong-but-stable pole/zero pairings and gain-scale errors pass every
+ * per-section check (each section is finite and Jury-stable) yet wreck the
+ * response shape — the confirmed defect measured DC gain 97.9 and a 350×
+ * resonance on a bandstop that must sit at ~1.  H(0) and H(π) are exact
+ * rational evaluations (no sampling, no trig, O(sections) cost at init
+ * time).
+ *
+ * Window calibration (measured on deployed f32 coefficients):
+ * accepted designs show realized error ≤ ~3.4e-2 (worst case: narrowband
+ * fc ≈ 6 Hz @ 48 kHz, where f32 coefficient quantization is genuinely
+ * felt); the confirmed pairing defects deviate by ≥ 0.45.  The ±0.1 /
+ * ±0.25 windows keep ≥ 3× separation on both sides.
+ *
+ * @param[in] sections      Deployed biquad cascade.
+ * @param[in] num_sections  Number of deployed sections.
+ * @param[in] dc_exp        Expected cascade DC gain (0, 1 or ripple-edge).
+ * @param[in] ny_exp        Expected cascade Nyquist gain (0, 1 or ripple-edge).
+ * @return                  1 if both gains match within tolerance.
+ */
+uint8_t check_cascade_gains(const biquad_filter_t *sections, uint8_t num_sections,
+                            float dc_exp, float ny_exp);
 
 #ifdef __cplusplus
 }

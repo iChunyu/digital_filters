@@ -86,9 +86,10 @@ void biquad_filter_set_empty(biquad_filter_t *filter);
  *
  * Coefficients are normalised so that @p den_z[0] becomes 1.0.
  * If @p den_z[0] is zero or non-finite, any coefficient is non-finite,
- * the resulting poles lie outside the unit circle (unstable), or the
- * poles are within a 1e-4 stability margin of the unit circle
- * (|a2| > 0.9999, or |a1| > 0.9999 for first-order sections), the filter
+ * the resulting poles lie outside the unit circle (unstable), or any
+ * pole radius exceeds 0.99995 (1 − r < 5e-5 — rings for ≥ 10⁴ samples:
+ * |a2| > 0.9999 for conjugate pairs, |a1| > 0.99995 for first-order
+ * sections, the general root formula for unequal real pairs), the filter
  * is silently replaced by a unity pass-through (identity) and 0 is
  * returned — passthrough is always preferred over divergence.
  *
@@ -109,6 +110,12 @@ uint8_t biquad_filter_init(biquad_filter_t *filter, const float num_z[3],
  * Defined static inline (header-only) to eliminate per-section function-call
  * overhead on resource-constrained MCUs.  The output computation is fused
  * with the state update so @p w[] values are loaded only once.
+ *
+ * @note A non-finite input (NaN/Inf) poisons the state vector and every
+ *       subsequent output until the filter is reset.  No guard is performed
+ *       here on purpose — it would cost branches on every sample of the MCU
+ *       hot path.  Callers feeding untrusted or sensor data should sanitise
+ *       at the source.
  *
  * @param[in,out] filter  Pointer to the filter object.
  * @param[in]     input   Current input sample.
@@ -176,6 +183,50 @@ float biquad_filter_get_input(const biquad_filter_t *filter);
  * @param[in]     equilibrium  Constant input value at steady-state.
  */
 void biquad_filter_reset(biquad_filter_t *filter, float equilibrium);
+
+/**
+ * @brief Process one sample through a cascade of biquad sections.
+ *
+ * Shared core for the per-order @p _update functions of the higher-order
+ * filter families.  Defined static inline so the whole per-sample path is
+ * call-free; @p num_sections must be a compile-time literal (the families
+ * pass their X-macro section count) so the loop bound folds away.
+ *
+ * @param[in,out] sections      Cascade of biquad sections.
+ * @param[in]     num_sections  Number of sections (compile-time literal).
+ * @param[in]     input         Current input sample.
+ * @return                      Filtered output sample.
+ */
+static inline float biquad_cascade_update(biquad_filter_t *sections,
+                                          uint8_t num_sections, float input)
+{
+    float x = input;
+    for (uint8_t i = 0; i < num_sections; i++) {
+        x = biquad_filter_update(&sections[i], x);
+    }
+    return x;
+}
+
+/**
+ * @brief Reset a cascade of biquad sections to steady-state.
+ *
+ * Shared core for the per-order @p _reset functions of the higher-order
+ * filter families.  Each section's steady state is computed for the
+ * steady-state output of the preceding section.
+ *
+ * @param[in,out] sections      Cascade of biquad sections.
+ * @param[in]     num_sections  Number of sections (compile-time literal).
+ * @param[in]     equilibrium   Constant input value at steady-state.
+ */
+static inline void biquad_cascade_reset(biquad_filter_t *sections,
+                                        uint8_t num_sections, float equilibrium)
+{
+    float x = equilibrium;
+    for (uint8_t i = 0; i < num_sections; i++) {
+        biquad_filter_reset(&sections[i], x);
+        x = biquad_filter_get_output(&sections[i]);
+    }
+}
 
 
 #ifdef __cplusplus

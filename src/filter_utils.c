@@ -59,8 +59,16 @@ void analog_hp_transform(complex_t *poles, uint8_t np,
 static complex_t c_sqrt(float re, float im)
 {
     complex_t r;
-    float mag = sqrtf(re * re + im * im);
-    if (mag < 1e-20f) {
+    /* Scaled magnitude.  sqrt(re² + im²) computed naively squares first:
+       near-Nyquist BP/BS discriminants reach |re|,|im| ~ 1.5e10, whose
+       squares ~2.25e20 are representable, but the un-scaled expression
+       overflows once either component exceeds √FLT_MAX ≈ 1.8e19 and the
+       pipeline must keep working up to where prewarp's tanf() saturates.
+       Scaling by the largest component keeps every intermediate ≤ √2,
+       pushing the overflow cliff out to FLT_MAX itself (where the design
+       is non-finite anyway and fails closed downstream). */
+    float m = fmaxf(fabsf(re), fabsf(im));
+    if (m < 1e-20f) {
         r.re = 0.0f;
         r.im = 0.0f;
         return r;
@@ -72,10 +80,13 @@ static complex_t c_sqrt(float re, float im)
         if (im < 0.0f) r.im = -r.im;
         return r;
     }
-    float sr = sqrtf(0.5f * (mag + re));
-    float si = sqrtf(0.5f * (mag - re));
-    r.re = sr;
-    r.im = (im >= 0.0f) ? si : -si;
+    float sr = re / m;
+    float si = im / m;
+    float mag = m * sqrtf(sr * sr + si * si);
+    float s1 = sqrtf(0.5f * (mag + re));
+    float s2 = sqrtf(0.5f * (mag - re));
+    r.re = s1;
+    r.im = (im >= 0.0f) ? s2 : -s2;
     return r;
 }
 
@@ -281,14 +292,6 @@ static void c_div(float *rr, float *ri, float ar, float ai, float br, float bi)
 /*  ZPK gain helpers (mirrors scipy zpk gain tracking)                */
 /* ================================================================== */
 
-float zpk_lp_gain(float k, float wo, uint8_t degree)
-{
-    float result = k;
-    for (uint8_t i = 0; i < degree; i++)
-        result *= wo;
-    return result;
-}
-
 float zpk_hp_bs_gain(float k, const complex_t *z, uint8_t nz,
                      const complex_t *p, uint8_t np)
 {
@@ -305,14 +308,6 @@ float zpk_hp_bs_gain(float k, const complex_t *z, uint8_t nz,
     for (; i < np; i++)
         c_div(&rr, &ri, rr, ri, -p[i].re, -p[i].im);
     return rr; /* imaginary part cancels for conjugate pairs */
-}
-
-float zpk_bp_gain(float k, float bw, uint8_t degree)
-{
-    float result = k;
-    for (uint8_t i = 0; i < degree; i++)
-        result *= bw;
-    return result;
 }
 
 float bilinear_zpk_gain(float k, const complex_t *z, uint8_t nz,
@@ -438,31 +433,52 @@ static uint8_t count_used(const uint8_t *used, uint8_t n,
     return cnt;
 }
 
-/* Find the conjugate of zp[idx] among unused elements and mark it used.
+/* Find the conjugate of arr[idx] among unused elements and mark it used.
    Matching tolerance is relative: |candidate - conj(target)| <= eps * |target|.
-   On failure, synthesises the conjugate (no element consumed). */
+   On failure, synthesises the conjugate (no element consumed — the caller's
+   all-claimed invariant then fails closed). */
 static void claim_conjugate(const complex_t *arr, uint8_t *used, uint8_t n,
                             uint8_t idx, complex_t *out, float eps)
 {
-    float mag = sqrtf(arr[idx].re * arr[idx].re + arr[idx].im * arr[idx].im);
+    float tr = arr[idx].re;
+    float ti = arr[idx].im;
+    float mag = sqrtf(tr * tr + ti * ti);
     float thresh = eps * (mag > 1e-12f ? mag : 1.0f);
+    /* Pick the unused element NEAREST to conj(target) inside the box.
+       Taking the first in-box element mispairs in high-Q BP/BS clusters
+       where inter-pair spacing (~8e-4) is smaller than the box (~1e-3):
+       a pole steals another pair's mate, two sections deploy as exact
+       duplicates while a distinct pair is dropped, and the end invariants
+       cannot detect the swap (spacing < their 1e-3 match tolerance).
+       Nearest-to-conjugate picks the true mate (bilinear f32 noise
+       ~2e-4) over a foreign pair (~8e-4). */
+    uint8_t best_i = n;
+    float best_d = 1e30f;
     for (uint8_t i = 0; i < n; i++) {
         if (used[i]) continue;
-        if (fabsf(arr[i].re - arr[idx].re) <= thresh
-            && fabsf(arr[i].im + arr[idx].im) <= thresh) {
-            used[i] = 1;
-            /* Average the pair (mirrors scipy _cplxreal).
-               arr[i] has opposite imag sign to arr[idx].
-               Return arr[i] averaged with conj(arr[idx]) so the caller
-               gets the true conjugate of the primary element. */
-            out->re = 0.5f * (arr[idx].re + arr[i].re);
-            out->im = 0.5f * (arr[i].im - arr[idx].im);
-            return;
+        if (fabsf(arr[i].re - tr) > thresh) continue;
+        if (fabsf(arr[i].im + ti) > thresh) continue;
+        float dr = arr[i].re - tr;
+        float di = arr[i].im + ti;
+        float d = sqrtf(dr * dr + di * di);
+        if (d < best_d) {
+            best_d = d;
+            best_i = i;
         }
     }
+    if (best_i != n) {
+        used[best_i] = 1;
+        /* Average the pair (mirrors scipy _cplxreal).
+           arr[best_i] has opposite imag sign to arr[idx].
+           Return arr[best_i] averaged with conj(arr[idx]) so the caller
+           gets the true conjugate of the primary element. */
+        out->re = 0.5f * (tr + arr[best_i].re);
+        out->im = 0.5f * (arr[best_i].im - ti);
+        return;
+    }
     /* Last resort: numerical mismatch — synthesise the conjugate. */
-    out->re =  arr[idx].re;
-    out->im = -arr[idx].im;
+    out->re =  tr;
+    out->im = -ti;
 }
 
 /* Roots of z² + c1·z + c2.  c2 == 0 → single finite root at −c1 (the
@@ -520,8 +536,8 @@ static int match_roots(const complex_t *roots, uint8_t nr,
  * 8th-order prototype → BP/BS doubles to 16. */
 #define ZPK2SOS_MAX_N 16
 
-uint8_t zpk2sos_impl(complex_t *zeros, complex_t *poles, uint8_t n,
-                     float (*sos)[6], float k)
+uint8_t zpk2sos(complex_t *zeros, complex_t *poles, uint8_t n,
+                float (*sos)[6], float k)
 {
     if (n == 0 || n > ZPK2SOS_MAX_N) return 0;
 
@@ -534,13 +550,24 @@ uint8_t zpk2sos_impl(complex_t *zeros, complex_t *poles, uint8_t n,
     uint8_t n_z = n;
     uint8_t section = 0;
     uint8_t max_sections = (n + 1) / 2;
-    /* Real/complex classification and conjugate-claim tolerance.  The
-       bilinear transform's f32 rounding can split a conjugate pair by
-       ~2e-4 absolute (near the unit circle, K² − |s|² cancellation), so
-       1e-4 was too tight: a failed claim synthesises a conjugate and the
-       n_p bookkeeping silently loses the real partner.  1e-3 is still far
-       below the separation between distinct pole pairs (≈ 2.0). */
-    const float eps_real = 1e-3f;
+    /* Real/complex CLASSIFICATION tolerance (eps_class) and conjugate
+       CLAIM box (eps_claim) are different quantities and must not share
+       one constant:
+       - Genuine real poles/zeros carry imaginary parts of exactly 0.0f —
+         every transform stage preserves real arithmetic for real inputs —
+         while genuine complex pairs have |im| ≥ ~1e-5 (≈ 2π·im(p)·fc1/fs
+         for the smallest representable wide bands).  1e-3 as a
+         classification tolerance was far too loose: wide-band BP/BS
+         designs produce legitimate near-real conjugate pairs with
+         |im| ~ 2.5e-4..6e-4, which got flattened to "real" and
+         cross-paired with a DIFFERENT pair's member — the manufactured
+         section sat with a pole exactly at z = 1 and the whole design
+         failed.  scipy's f64 equivalent is 100·eps; 100·eps_f32 ≈ 1.2e-5.
+       - The claim box must swallow the bilinear transform's f32 rounding,
+         which can split a conjugate pair by ~2e-4 absolute near the unit
+         circle (K² − |s|² cancellation): 1e-3 stays. */
+    const float eps_class = 1e-5f;
+    const float eps_claim = 1e-3f;
 
     while (n_p > 0) {
         /* Safety caps: never exceed allocated rows
@@ -556,12 +583,12 @@ uint8_t zpk2sos_impl(complex_t *zeros, complex_t *poles, uint8_t n,
 
         complex_t p2, z1, z2;
 
-        if (is_real(&p1, eps_real)) {
+        if (is_real(&p1, eps_class)) {
             /* p1 is real — try to pair with another real pole. */
-            if (count_used(used_p, n, poles, 1, eps_real) > 0) {
+            if (count_used(used_p, n, poles, 1, eps_class) > 0) {
                 float best;
                 uint8_t p2_i = find_nearest_typed(poles, used_p, n, &p1,
-                                                  1, eps_real, &best);
+                                                  1, eps_class, &best);
                 p2 = poles[p2_i];
                 used_p[p2_i] = 1;
                 n_p--;
@@ -572,7 +599,7 @@ uint8_t zpk2sos_impl(complex_t *zeros, complex_t *poles, uint8_t n,
                    one and drop its conjugate from the cascade. */
                 float best;
                 uint8_t z1_i = find_nearest_typed(zeros, used_z, n, &p1,
-                                                  1, eps_real, &best);
+                                                  1, eps_class, &best);
                 if (best == 1e30f) return 0;
                 z1 = zeros[z1_i];
                 used_z[z1_i] = 1;
@@ -592,15 +619,15 @@ uint8_t zpk2sos_impl(complex_t *zeros, complex_t *poles, uint8_t n,
             }
         } else {
             /* p1 is complex — pair with its conjugate. */
-            claim_conjugate(poles, used_p, n, p1_i, &p2, eps_real);
+            claim_conjugate(poles, used_p, n, p1_i, &p2, eps_claim);
             n_p--;
         }
 
         /* 2. Match two zeros to this pole pair. */
         uint8_t z1_i = find_nearest(zeros, used_z, n, &p1);
 
-        if (is_real(&zeros[z1_i], eps_real)) {
-            if (count_used(used_z, n, zeros, 1, eps_real) > 1) {
+        if (is_real(&zeros[z1_i], eps_class)) {
+            if (count_used(used_z, n, zeros, 1, eps_class) > 1) {
                 /* Two real zeros available — use z1 and the nearest other real. */
                 z1 = zeros[z1_i];
                 used_z[z1_i] = 1;
@@ -608,7 +635,7 @@ uint8_t zpk2sos_impl(complex_t *zeros, complex_t *poles, uint8_t n,
 
                 float best;
                 uint8_t z2_i = find_nearest_typed(zeros, used_z, n, &p1,
-                                                  1, eps_real, &best);
+                                                  1, eps_class, &best);
                 z2 = zeros[z2_i];
                 used_z[z2_i] = 1;
                 n_z--;
@@ -619,7 +646,7 @@ uint8_t zpk2sos_impl(complex_t *zeros, complex_t *poles, uint8_t n,
                 float best_d = 1e30f;
                 for (uint8_t i = 0; i < n; i++) {
                     if (used_z[i]) continue;
-                    if (is_real(&zeros[i], eps_real)) continue;
+                    if (is_real(&zeros[i], eps_class)) continue;
                     float d = c_dist(&zeros[i], &p1);
                     if (d < best_d) { best_d = d; best_i = i; }
                 }
@@ -627,7 +654,7 @@ uint8_t zpk2sos_impl(complex_t *zeros, complex_t *poles, uint8_t n,
                 used_z[best_i] = 1;
                 n_z--;
 
-                claim_conjugate(zeros, used_z, n, best_i, &z2, eps_real);
+                claim_conjugate(zeros, used_z, n, best_i, &z2, eps_claim);
                 n_z--;
             }
         } else {
@@ -636,7 +663,7 @@ uint8_t zpk2sos_impl(complex_t *zeros, complex_t *poles, uint8_t n,
             used_z[z1_i] = 1;
             n_z--;
 
-            claim_conjugate(zeros, used_z, n, z1_i, &z2, eps_real);
+            claim_conjugate(zeros, used_z, n, z1_i, &z2, eps_claim);
             n_z--;
         }
 
@@ -701,14 +728,131 @@ uint8_t zpk2sos_impl(complex_t *zeros, complex_t *poles, uint8_t n,
     return section;
 }
 
-uint8_t zpk2sos(const complex_t *zeros, const complex_t *poles, uint8_t n,
-                float (*sos)[6], float k)
+/* ================================================================== */
+/*  Shared design pipeline (Butterworth / Chebyshev)                   */
+/* ================================================================== */
+
+/*
+ * Maximum prototype order after BP/BS transform: 2 × 8 = 16 poles/zeros,
+ * ceil(16/2) = 8 sections.  Stack usage during init: poles (128 B) +
+ * zeros (128 B) + sos (192 B) ≈ 448 B, plus the caller's prototype
+ * arrays (~128 B) — the ~800 B peak documented in CLAUDE.md.
+ */
+
+uint8_t design_filter(biquad_filter_t *sections, uint8_t max_sections,
+                      uint8_t type,
+                      float wc1, float wc2, float fs,
+                      float k,
+                      const complex_t *proto_poles, uint8_t np,
+                      const complex_t *proto_zeros, uint8_t nz)
 {
-    if (n == 0 || n > ZPK2SOS_MAX_N) return 0;
+    complex_t poles[ZPK2SOS_MAX_N];
+    complex_t zeros[ZPK2SOS_MAX_N];
+    uint8_t degree = np - nz; /* prototype relative degree */
 
-    complex_t wz[ZPK2SOS_MAX_N], wp[ZPK2SOS_MAX_N];
-    memcpy(wp, poles, n * sizeof(complex_t));
-    memcpy(wz, zeros, n * sizeof(complex_t));
+    memcpy(poles, proto_poles, (size_t)np * sizeof(complex_t));
+    if (nz > 0 && proto_zeros != NULL) {
+        memcpy(zeros, proto_zeros, (size_t)nz * sizeof(complex_t));
+    }
 
-    return zpk2sos_impl(wz, wp, n, sos, k);
+    /* LP/BP gain scaling: wc^degree (LP) or xi^degree (BP), folded into the
+       bilinear gain below (see bilinear_zpk_gain_scaled). */
+    float gs = 0.0f;
+
+    /* 1. Analog frequency transform */
+    switch (type) {
+    case FILTER_LOWPASS:
+        analog_lp_transform(poles, np, zeros, nz, wc1);
+        gs = wc1;
+        break;
+    case FILTER_HIGHPASS:
+        k = zpk_hp_bs_gain(k, zeros, nz, poles, np);
+        analog_hp_transform(poles, np, zeros, nz, wc1);
+        for (uint8_t i = nz; i < np; i++) {
+            zeros[i].re = 0.0f;
+            zeros[i].im = 0.0f;
+        }
+        nz = np;
+        break;
+    case FILTER_BANDPASS: {
+        float w0 = sqrtf(wc1 * wc2);
+        float xi = wc2 - wc1;
+        analog_bp_transform(poles, &np, zeros, &nz, w0, xi);
+        gs = xi;
+        break;
+    }
+    case FILTER_BANDSTOP: {
+        float w0 = sqrtf(wc1 * wc2);
+        float xi = wc2 - wc1;
+        k = zpk_hp_bs_gain(k, zeros, nz, poles, np);
+        analog_bs_transform(poles, &np, zeros, &nz, w0, xi);
+        break;
+    }
+    default:
+        return 0;
+    }
+
+    /* 2. Bilinear gain (on s-domain zp, before bilinear transform clobbers
+       them).  k == 0 deploys an all-zero-numerator (silence) filter — a
+       degenerate outcome, not a valid design. */
+    if (gs != 0.0f) {
+        k = bilinear_zpk_gain_scaled(k, gs, degree, zeros, nz, poles, np,
+                                     2.0f * fs);
+    } else {
+        k = bilinear_zpk_gain(k, zeros, nz, poles, np, 2.0f * fs);
+    }
+    if (!isfinite(k) || k == 0.0f) return 0;
+
+    /* 3. Bilinear transform: s → z */
+    bilinear_transform(poles, np, fs);
+    bilinear_transform(zeros, nz, fs);
+
+    /* 4. Zero-pad: prototype zeros at s=∞ → z = -1 (not for BS). */
+    if (type != FILTER_BANDSTOP) {
+        for (uint8_t i = nz; i < np; i++) {
+            zeros[i].re = -1.0f;
+            zeros[i].im =  0.0f;
+        }
+        nz = np;
+    }
+
+    /* 5. Pair poles and zeros → SOS coefficients. */
+    uint8_t ns = (np + 1) / 2;
+    if (ns > max_sections) return 0;
+
+    float sos[ZPK2SOS_MAX_N / 2][6];
+    uint8_t n_sections = zpk2sos(zeros, poles, np, sos, k);
+    if (n_sections != ns) return 0;
+
+    /* 6. Deploy to biquad sections. */
+    for (uint8_t i = 0; i < n_sections; i++) {
+        float num[3] = {sos[i][0], sos[i][1], sos[i][2]};
+        float den[3] = {sos[i][3], sos[i][4], sos[i][5]};
+        if (!biquad_filter_init(&sections[i], num, den)) return 0;
+    }
+
+    return n_sections;
+}
+
+uint8_t check_cascade_gains(const biquad_filter_t *sections,
+                            uint8_t num_sections,
+                            float dc_exp, float ny_exp)
+{
+    float h0 = 1.0f, hn = 1.0f;
+    for (uint8_t i = 0; i < num_sections; i++) {
+        const biquad_filter_t *b = &sections[i];
+        h0 *= (b->num_z[0] + b->num_z[1] + b->num_z[2])
+            / (1.0f + b->den_z[1] + b->den_z[2]);
+        hn *= (b->num_z[0] - b->num_z[1] + b->num_z[2])
+            / (1.0f - b->den_z[1] + b->den_z[2]);
+    }
+    /* Exact structural gains (0 or 1, enforced by zeros at ±1) tolerate
+       ±0.1.  Ripple-edge gains (10^(−rp/rs/20) for cheby1/2 even orders)
+       sit on the steepest part of the response near the band edges, where
+       f32 bilinear warping shifts the ripple pattern; widen those to
+       ±0.25.  Calibration is in the header; the confirmed pairing defects
+       deviate by ≥ 0.45, still far outside either window. */
+    float tol0 = (dc_exp == 0.0f || dc_exp == 1.0f) ? 0.1f : 0.25f;
+    float toln = (ny_exp == 0.0f || ny_exp == 1.0f) ? 0.1f : 0.25f;
+    return fabsf(h0 - dc_exp) <= tol0 && fabsf(hn - ny_exp) <= toln;
 }
