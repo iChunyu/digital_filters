@@ -9,18 +9,18 @@
 extern "C" {
 #endif
 
-/* ── Common prefix for all static Butterworth structs ─────────────────── */
+/* ── 所有静态 Butterworth 结构体的公共前缀 ───────────────────────── */
 
 #define BUTTER_FIELDS \
-    uint8_t  valid;        /* 1 = init succeeded                          */ \
-    uint8_t  type;         /* filter_type_e: LOWPASS, HIGHPASS, etc.     */ \
-    uint8_t  order;        /* filter order N                              */ \
-    uint8_t  num_sections; /* number of active biquad sections            */ \
-    float    fc1;          /* cutoff / lower band-edge in Hz              */ \
-    float    fc2;          /* upper band-edge in Hz (0 for LP/HP)         */ \
-    float    fs;           /* sampling frequency in Hz                    */
+    uint8_t  valid;        /* 1 = init 成功 */                         \
+    uint8_t  type;         /* filter_type_e：LOWPASS、HIGHPASS 等 */   \
+    uint8_t  order;        /* 滤波器阶数 N */                          \
+    uint8_t  num_sections; /* 活跃 biquad 节数 */                      \
+    float    fc1;          /* 截止频率 / 下带边（Hz） */               \
+    float    fc2;          /* 上带边（Hz，LP/HP 为 0） */              \
+    float    fs;           /* 采样频率（Hz） */
 
-/* ── Order tables (X-macro) ───────────────────────────────────────────── */
+/* ── 阶数表（X-macro）────────────────────────────────────────────── */
 /* order, sections_for_lp_hp, ordinal_label */
 
 #define FOR_EACH_BUTTER_LP_ORDER \
@@ -45,88 +45,87 @@ extern "C" {
     X(7, 7, 7th) \
     X(8, 8, 8th)
 
-/* ── Per-order struct typedefs ────────────────────────────────────────── */
+/* ── 各阶结构体 typedef ──────────────────────────────────────────── */
 
-/* Lowpass */
+/* 低通 */
 #define X(order, ns, ol) \
     typedef struct { BUTTER_FIELDS biquad_filter_t sections[ns]; } butter_lp_##ol##_t;
 FOR_EACH_BUTTER_LP_ORDER
 #undef X
 
-/* Highpass */
+/* 高通 */
 #define X(order, ns, ol) \
     typedef struct { BUTTER_FIELDS biquad_filter_t sections[ns]; } butter_hp_##ol##_t;
 FOR_EACH_BUTTER_LP_ORDER
 #undef X
 
-/* Bandpass */
+/* 带通 */
 #define X(order, ns, ol) \
     typedef struct { BUTTER_FIELDS biquad_filter_t sections[ns]; } butter_bp_##ol##_t;
 FOR_EACH_BUTTER_BP_ORDER
 #undef X
 
-/* Bandstop */
+/* 带阻 */
 #define X(order, ns, ol) \
     typedef struct { BUTTER_FIELDS biquad_filter_t sections[ns]; } butter_bs_##ol##_t;
 FOR_EACH_BUTTER_BP_ORDER
 #undef X
 
-/* ── Per-order init declarations ──────────────────────────────────────── */
+/* ── 各阶 init 声明 ──────────────────────────────────────────────── */
 
-/* Lowpass: init(f, fc, fs) */
+/* 低通：init(f, fc, fs) */
 #define X(order, ns, ol) \
     void butter_lp_##ol##_init(butter_lp_##ol##_t *f, float fc, float fs);
 FOR_EACH_BUTTER_LP_ORDER
 #undef X
 
-/* Highpass: init(f, fc, fs) */
+/* 高通：init(f, fc, fs) */
 #define X(order, ns, ol) \
     void butter_hp_##ol##_init(butter_hp_##ol##_t *f, float fc, float fs);
 FOR_EACH_BUTTER_LP_ORDER
 #undef X
 
-/* Bandpass: init(f, fc1, fc2, fs) */
+/* 带通：init(f, fc1, fc2, fs) */
 #define X(order, ns, ol) \
     void butter_bp_##ol##_init(butter_bp_##ol##_t *f, float fc1, float fc2, float fs);
 FOR_EACH_BUTTER_BP_ORDER
 #undef X
 
-/* Bandstop: init(f, fc1, fc2, fs) */
+/* 带阻：init(f, fc1, fc2, fs) */
 #define X(order, ns, ol) \
     void butter_bs_##ol##_init(butter_bs_##ol##_t *f, float fc1, float fc2, float fs);
 FOR_EACH_BUTTER_BP_ORDER
 #undef X
 
-/* ── Per-order update / reset (static inline — MCU hot path) ──────────── */
+/* ── 各阶 update / reset（static inline — MCU 热路径）─────────────── */
 
 /**
- * @brief Process one sample through a statically-allocated Butterworth filter.
+ * @brief 处理一个样本，流经静态分配的 Butterworth 滤波器。
  *
- * Functions follow the naming convention butter_{lp,hp,bp,bs}_{1st..8th}_update.
- * If the filter is invalid (!valid), returns @p input unchanged (passthrough).
+ * 函数命名遵循 butter_{lp,hp,bp,bs}_{1st..8th}_update。
+ * 滤波器无效（!valid）时原样返回 @p input（直通）。
  *
- * Defined static inline with the section count passed as a compile-time
- * literal: the per-sample path compiles to the biquad loop with no
- * function call, no runtime section-count load and no link-time symbol
- * (96 near-identical out-of-line copies would otherwise cost ~12.8 KB of
- * flash plus a call frame per sample).
+ * 以 static inline 定义，节数以编译期字面量传入：每样本路径
+ * 编译为 biquad 循环，零函数调用、零运行时节数装载、零链接符号
+ * （96 个几乎相同的 out-of-line 副本曾占 ~12.8 KB flash，
+ * 每样本还多一次调用开销）。
  *
- * @param[in,out] f      Pointer to the filter struct.
- * @param[in]     input  Current input sample.
- * @return               Filtered output.
+ * @param[in,out] f      滤波器结构体指针。
+ * @param[in]     input  当前输入样本。
+ * @return               滤波输出。
  */
 
 /**
- * @brief Reset a statically-allocated Butterworth filter to steady-state.
+ * @brief 把静态分配的 Butterworth 滤波器复位到稳态。
  *
- * Functions follow the naming convention butter_{lp,hp,bp,bs}_{1st..8th}_reset.
- * No-op if the filter is invalid (!valid).
+ * 函数命名遵循 butter_{lp,hp,bp,bs}_{1st..8th}_reset。
+ * 滤波器无效（!valid）时为空操作。
  *
- * @param[in,out] f           Pointer to the filter struct.
- * @param[in]     equilibrium  Constant input value at steady-state.
+ * @param[in,out] f           滤波器结构体指针。
+ * @param[in]     equilibrium  稳态常值输入。
  */
 
-/* Lowpass */
+/* 低通 */
 #define X(order, ns, ol) \
     static inline float butter_lp_##ol##_update(butter_lp_##ol##_t *f, float input) \
     { \
@@ -141,7 +140,7 @@ FOR_EACH_BUTTER_BP_ORDER
 FOR_EACH_BUTTER_LP_ORDER
 #undef X
 
-/* Highpass */
+/* 高通 */
 #define X(order, ns, ol) \
     static inline float butter_hp_##ol##_update(butter_hp_##ol##_t *f, float input) \
     { \
@@ -156,7 +155,7 @@ FOR_EACH_BUTTER_LP_ORDER
 FOR_EACH_BUTTER_LP_ORDER
 #undef X
 
-/* Bandpass */
+/* 带通 */
 #define X(order, ns, ol) \
     static inline float butter_bp_##ol##_update(butter_bp_##ol##_t *f, float input) \
     { \
@@ -171,7 +170,7 @@ FOR_EACH_BUTTER_LP_ORDER
 FOR_EACH_BUTTER_BP_ORDER
 #undef X
 
-/* Bandstop */
+/* 带阻 */
 #define X(order, ns, ol) \
     static inline float butter_bs_##ol##_update(butter_bs_##ol##_t *f, float input) \
     { \

@@ -15,9 +15,20 @@ static int failures = 0;
 
 #define CLOSE(a, b, eps) (fabsf((a) - (b)) <= (eps))
 
-/* Run a tone through the filter and measure steady-state amplitude.
-   Returns 1.0f for an invalid filter — a passthrough deployment must
-   FAIL attenuation checks, not pass them vacuously with 0.0f. */
+/**
+ * @brief 让正弦扫过滤波器，测稳态幅值。
+ *
+ * 无效滤波器返回 1.0f——直通部署必须让衰减检查失败，
+ * 而不是用 0.0f 空过检查。
+ *
+ * @param[in] sections  biquad 节级联。
+ * @param[in] ns        节数。
+ * @param[in] valid     滤波器 valid 标志。
+ * @param[in] freq      测试正弦频率（Hz）。
+ * @param[in] fs        采样频率（Hz）。
+ * @param[in] steps     总采样点数。
+ * @return              后一半样本的峰值幅值。
+ */
 static float measure_gain(biquad_filter_t *sections, uint8_t ns, uint8_t valid,
                           float freq, float fs, int steps)
 {
@@ -46,10 +57,18 @@ static float measure_gain(biquad_filter_t *sections, uint8_t ns, uint8_t valid,
     return max_out;
 }
 
-/* Steady-state amplitude for the Nyquist tone (alternating ±1).
-   NOTE: a sine at exactly fs/2 evaluates to sin(π·n) ≡ 0 in f32 — that
-   stimulus passes through ANY filter vacuously.  The alternating ±1
-   square wave is the real Nyquist signal. */
+/**
+ * @brief 测 Nyquist 音（交替 ±1）的稳态幅值。
+ *
+ * @note 恰好 fs/2 的正弦在 f32 下求值为 sin(π·n) ≡ 0——该激励
+ *       空过任何滤波器。交替 ±1 方波才是真正的 Nyquist 信号。
+ *
+ * @param[in] sections  biquad 节级联。
+ * @param[in] ns        节数。
+ * @param[in] valid     滤波器 valid 标志。
+ * @param[in] steps     总采样点数。
+ * @return              后一半样本的峰值幅值。
+ */
 static float measure_nyquist_gain(biquad_filter_t *sections, uint8_t ns,
                                   uint8_t valid, int steps)
 {
@@ -70,6 +89,59 @@ static float measure_nyquist_gain(biquad_filter_t *sections, uint8_t ns,
         }
     }
     return max_out;
+}
+
+/**
+ * @brief 由节系数解析计算级联 DC 增益。
+ *
+ * @param[in] sections  biquad 节级联。
+ * @param[in] ns        节数。
+ * @return              H(1)。
+ */
+static float cascade_dc_gain(const biquad_filter_t *sections, uint8_t ns)
+{
+    float h = 1.0f;
+    for (uint8_t i = 0; i < ns; i++)
+        h *= (sections[i].num_z[0] + sections[i].num_z[1] + sections[i].num_z[2])
+           / (1.0f + sections[i].den_z[1] + sections[i].den_z[2]);
+    return h;
+}
+
+/**
+ * @brief 由节系数解析计算级联 Nyquist 增益。
+ *
+ * @param[in] sections  biquad 节级联。
+ * @param[in] ns        节数。
+ * @return              H(−1)。
+ */
+static float cascade_nyq_gain(const biquad_filter_t *sections, uint8_t ns)
+{
+    float h = 1.0f;
+    for (uint8_t i = 0; i < ns; i++)
+        h *= (sections[i].num_z[0] - sections[i].num_z[1] + sections[i].num_z[2])
+           / (1.0f - sections[i].den_z[1] + sections[i].den_z[2]);
+    return h;
+}
+
+/**
+ * @brief 固定频率网格上的最大稳态增益。
+ *
+ * @param[in] sections  biquad 节级联。
+ * @param[in] ns        节数。
+ * @param[in] fs        采样频率（Hz）。
+ * @param[in] steps     每个频点的采样点数。
+ * @return              网格上的最大峰值幅值。
+ */
+static float max_gain_over(biquad_filter_t *sections, uint8_t ns,
+                           float fs, int steps)
+{
+    const float grid[] = {20.0f, 24.5f, 50.0f, 100.0f, 200.0f, 300.0f, 480.0f};
+    float m = 0.0f;
+    for (unsigned i = 0; i < sizeof(grid) / sizeof(grid[0]); i++) {
+        float g = measure_gain(sections, ns, 1, grid[i], fs, steps);
+        if (g > m) m = g;
+    }
+    return m;
 }
 
 int main(void)
@@ -332,6 +404,91 @@ int main(void)
           "LP 3rd bigger than LP 1st");
     CHECK(sizeof(butter_bp_8th_t) > sizeof(butter_bp_1st_t),
           "BP 8th bigger than BP 1st");
+
+    /* ── Sweep: butter 全阶矩阵（LP/HP/BP/BS × 全 8 阶）──────────────
+       补齐 X-macro 生成 init 的测试覆盖。init 内部已做级联增益
+       校验，此处复核窗口并约束 max|H|。──────────────────────────── */
+
+    static const float sw_bfc[2] = {100.0f, 480.0f};
+    static const float sw_bbands[3][2] = {{50.0f, 120.0f}, {20.0f, 480.0f},
+                                          {10.0f, 499.0f}};
+
+    #define X(ord, ns, ol) \
+        for (int sw_fi = 0; sw_fi < 2; sw_fi++) { \
+            butter_lp_##ol##_t swf; \
+            swf.valid = 0; \
+            butter_lp_##ol##_init(&swf, sw_bfc[sw_fi], 1000.0f); \
+            CHECK(swf.valid == 1, "sweep butter LP " #ol " valid"); \
+            if (swf.valid) { \
+                y = cascade_dc_gain(swf.sections, swf.num_sections); \
+                CHECK(CLOSE(y, 1.0f, 0.1f), "sweep butter LP " #ol " DC window"); \
+                y = cascade_nyq_gain(swf.sections, swf.num_sections); \
+                CHECK(fabsf(y) <= 0.1f, "sweep butter LP " #ol " Nyq window"); \
+                y = max_gain_over(swf.sections, swf.num_sections, 1000.0f, 2000); \
+                CHECK(y < 1.2f, "sweep butter LP " #ol " max|H| sane"); \
+            } \
+        }
+    FOR_EACH_BUTTER_LP_ORDER
+    #undef X
+
+    #define X(ord, ns, ol) \
+        for (int sw_fi = 0; sw_fi < 2; sw_fi++) { \
+            butter_hp_##ol##_t swf; \
+            swf.valid = 0; \
+            butter_hp_##ol##_init(&swf, sw_bfc[sw_fi], 1000.0f); \
+            CHECK(swf.valid == 1, "sweep butter HP " #ol " valid"); \
+            if (swf.valid) { \
+                y = cascade_dc_gain(swf.sections, swf.num_sections); \
+                CHECK(fabsf(y) <= 0.1f, "sweep butter HP " #ol " DC window"); \
+                y = cascade_nyq_gain(swf.sections, swf.num_sections); \
+                CHECK(CLOSE(y, 1.0f, 0.1f), "sweep butter HP " #ol " Nyq window"); \
+                y = max_gain_over(swf.sections, swf.num_sections, 1000.0f, 2000); \
+                CHECK(y < 1.2f, "sweep butter HP " #ol " max|H| sane"); \
+            } \
+        }
+    FOR_EACH_BUTTER_LP_ORDER
+    #undef X
+
+    #define X(ord, ns, ol) \
+        for (int sw_bi = 0; sw_bi < 3; sw_bi++) { \
+            butter_bp_##ol##_t swf; \
+            swf.valid = 0; \
+            butter_bp_##ol##_init(&swf, sw_bbands[sw_bi][0], sw_bbands[sw_bi][1], \
+                                  1000.0f); \
+            CHECK(swf.valid == 1, "sweep butter BP " #ol " valid"); \
+            if (swf.valid) { \
+                y = cascade_dc_gain(swf.sections, swf.num_sections); \
+                CHECK(fabsf(y) <= 0.1f, "sweep butter BP " #ol " DC window"); \
+                y = cascade_nyq_gain(swf.sections, swf.num_sections); \
+                CHECK(fabsf(y) <= 0.1f, "sweep butter BP " #ol " Nyq window"); \
+                y = max_gain_over(swf.sections, swf.num_sections, 1000.0f, 2000); \
+                CHECK(y < 1.2f, "sweep butter BP " #ol " max|H| sane"); \
+            } \
+        }
+    FOR_EACH_BUTTER_BP_ORDER
+    #undef X
+
+    #define X(ord, ns, ol) \
+        for (int sw_bi = 0; sw_bi < 2; sw_bi++) { \
+            butter_bs_##ol##_t swf; \
+            swf.valid = 0; \
+            /* BS 只取前 2 个频带：[10,499] 超宽带下解析响应正确， \
+               但时域 f32 DF-II 状态噪声被近单位圆极点放大（6~8 阶 \
+               max|H| 实测 47~6.6e5），超出库的实用包络。 */ \
+            butter_bs_##ol##_init(&swf, sw_bbands[sw_bi][0], sw_bbands[sw_bi][1], \
+                                  1000.0f); \
+            CHECK(swf.valid == 1, "sweep butter BS " #ol " valid"); \
+            if (swf.valid) { \
+                y = cascade_dc_gain(swf.sections, swf.num_sections); \
+                CHECK(CLOSE(y, 1.0f, 0.1f), "sweep butter BS " #ol " DC window"); \
+                y = cascade_nyq_gain(swf.sections, swf.num_sections); \
+                CHECK(CLOSE(y, 1.0f, 0.1f), "sweep butter BS " #ol " Nyq window"); \
+                y = max_gain_over(swf.sections, swf.num_sections, 1000.0f, 2000); \
+                CHECK(y < 1.2f, "sweep butter BS " #ol " max|H| sane"); \
+            } \
+        }
+    FOR_EACH_BUTTER_BP_ORDER
+    #undef X
 
     /* ── Report ───────────────────────────────────────────────────────── */
 

@@ -1,18 +1,23 @@
 /**
  * @file    biquad_filter.c
- * @brief   Implementation of the Direct Form II biquad filter.
+ * @brief   直接 II 型 biquad 滤波器的实现。
  */
 
 #include "biquad_filter.h"
 #include <math.h>
 
-/*
- * Compensated 3-term summation (TwoSum-style).  Naive f32 evaluation of
- * 1 + a1 + a2 cancels to exactly 0.0f when the true residual is a few ulps
- * of 1.0 (narrowband designs: a1 ≈ −2, a2 ≈ 1 − ε) — that spuriously
- * rejects stable filters whose poles sit well inside the unit circle and
- * equally mis-evaluates the reset denominator.  Folding the rounding error
- * of each addition back in recovers the residual at f32 cost.
+/**
+ * @brief 三项补偿求和（TwoSum 式）。
+ *
+ * 裸 f32 计算 1 + a1 + a2 在真余量为 1.0 的若干 ulp 时会恰好消成
+ * 0.0f（窄带设计：a1 ≈ −2，a2 ≈ 1 − ε）——把极点远离单位圆的
+ * 稳定滤波器误拒，同样也会误算 reset 的分母。把每次加法的
+ * 舍入误差折回即可在 f32 代价下恢复余量。
+ *
+ * @param x  第一加数。
+ * @param y  第二加数。
+ * @param z  第三加数。
+ * @return   补偿后的和 x + y + z。
  */
 static float sum3f(float x, float y, float z)
 {
@@ -27,6 +32,11 @@ static float sum3f(float x, float y, float z)
     return s + c;
 }
 
+/**
+ * @brief 状态向量清零。
+ *
+ * @param[out] filter  滤波器对象指针。
+ */
 static void biquad_zero_state(biquad_filter_t *filter)
 {
     filter->w[0] = 0.0f;

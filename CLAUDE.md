@@ -163,8 +163,8 @@ Chebyshev 运行时算原型传自己的 `k` 和有限零点。级联增益校�
 | `src/butter_filter.c` | 预计算极点表、按阶 init（管线走 design_filter） |
 | `src/cheby_filter.c` | 运行时原型计算、按阶 init（管线走 design_filter） |
 | `test/test_biquad.c` | Biquad 测试（含裕量对称性、积分器 reset、NaN 语义） |
-| `test/test_butter.c` | Butterworth 测试（全类型、多阶数 + 近实配对/窄带回归） |
-| `test/test_cheby.c` | Chebyshev I/II 测试（全类型、多阶数 + 高 Q 配对回归） |
+| `test/test_butter.c` | Butterworth 测试（全类型、多阶数 + 全阶扫掠 + 近实配对/窄带回归） |
+| `test/test_cheby.c` | Chebyshev I/II 测试（全类型、多阶数 + 全阶扫掠 + 高 Q 配对回归） |
 | `test/test_butter_with_py.c` | 生成 CSV（argv 指定路径 + valid 检查）与 scipy 对比 |
 | `test/test_cheby_with_py.c` | 生成 CSV（argv 指定路径 + valid 检查）与 scipy 对比 |
 | `test/test_butter_use_py.py` | Python 参考滤波器（Butterworth，含绘图，argv 指定数据目录） |

@@ -14,6 +14,13 @@ float prewarp(float fd, float fs)
 
 /* ------------------------------------------------------------------ */
 
+/**
+ * @brief 复数数组整体乘以标量。
+ *
+ * @param[in,out] zp  复数数组。
+ * @param[in]     n   元素个数。
+ * @param[in]     s   缩放系数。
+ */
 static void scale_complex(complex_t *zp, uint8_t n, float s)
 {
     for (uint8_t i = 0; i < n; i++) {
@@ -54,8 +61,22 @@ void analog_hp_transform(complex_t *poles, uint8_t np,
 
 /* ------------------------------------------------------------------ */
 
-/* Complex square root: sqrt(re + j·im).
-   Returns the principal branch (non-negative real part). */
+/**
+ * @brief 复数平方根：计算 sqrt(re + j·im)。
+ *
+ * 返回主支（实部非负）。
+ *
+ * @note 幅值采用缩放计算（见函数体注释）：近 Nyquist 的 BP/BS
+ *       判别式 |re|,|im| ~ 1.5e10，裸平方（~2.25e20）尚可表示，
+ *       但任一分量超过 √FLT_MAX ≈ 1.8e19 即溢出——而管线必须
+ *       撑到 prewarp 的 tanf() 饱和处。按最大分量缩放让每个
+ *       中间量 ≤ √2，把溢出悬崖推到 FLT_MAX 本身（此时设计
+ *       已非有限，下游 fail-closed 拒绝）。
+ *
+ * @param re  实部。
+ * @param im  虚部。
+ * @return    平方根（主支）。
+ */
 static complex_t c_sqrt(float re, float im)
 {
     complex_t r;
@@ -95,12 +116,22 @@ static complex_t c_sqrt(float re, float im)
 static void c_mul(float *rr, float *ri, float ar, float ai, float br, float bi);
 static void c_div(float *rr, float *ri, float ar, float ai, float br, float bi);
 
-/* Stable roots of s² + B·s + C = 0 (B, C complex): root1 = (−B − √(B²−4C))/2
-   and root2 = C / root1.  The direct formula (−B + √…)/2 cancels
-   catastrophically when |B|² ≫ 4|C| (real prototype poles of wideband
-   BP/BS designs, |xi·p| ≈ √disc): the f32 result carries ~ulp(|B|)/2 of
-   imaginary noise, which then breaks conjugate pairing downstream.
-   Computing the small root as C / root1 avoids the cancellation entirely. */
+/**
+ * @brief 求 s² + B·s + C = 0（B、C 为复数）的稳定根。
+ *
+ * root1 = (−B − √(B²−4C))/2，root2 = C / root1。直接公式
+ * (−B + √…)/2 在 |B|² ≫ 4|C| 时灾难性消减（宽带 BP/BS 设计的
+ * 实原型极点，|xi·p| ≈ √disc）：f32 结果携带 ~ulp(|B|)/2 的
+ * 虚部噪声，下游共轭配对随之被破坏。小根改用 C / root1
+ * 完全避开消减。
+ *
+ * @param[in]  B_re  一次项系数 B 的实部。
+ * @param[in]  B_im  一次项系数 B 的虚部。
+ * @param[in]  C_re  常数项系数 C 的实部。
+ * @param[in]  C_im  常数项系数 C 的虚部。
+ * @param[out] r1    大根（−B − √disc）/2。
+ * @param[out] r2    小根 C / r1（r1 退化时退化为直接公式）。
+ */
 static void stable_roots(float B_re, float B_im, float C_re, float C_im,
                          complex_t *r1, complex_t *r2)
 {
@@ -237,11 +268,13 @@ void bilinear_transform(complex_t *zp, uint8_t n, float fs)
 
 /* ------------------------------------------------------------------ */
 
-static inline float c_abs(const complex_t *a)
-{
-    return sqrtf(a->re * a->re + a->im * a->im);
-}
-
+/**
+ * @brief 两点间欧氏距离。
+ *
+ * @param a  第一个点。
+ * @param b  第二个点。
+ * @return   |a − b|。
+ */
 static inline float c_dist(const complex_t *a, const complex_t *b)
 {
     float dr = a->re - b->re;
@@ -249,14 +282,30 @@ static inline float c_dist(const complex_t *a, const complex_t *b)
     return sqrtf(dr * dr + di * di);
 }
 
-/* Relative tolerance: |im| <= eps * |z|  (matches scipy _cplxreal). */
+/**
+ * @brief 相对容差实数判定：|im| ≤ eps·|z|（与 scipy _cplxreal 一致）。
+ *
+ * @param a    待判定的复数。
+ * @param eps  相对容差。
+ * @return     1 表示可视为实数。
+ */
 static inline int is_real(const complex_t *a, float eps)
 {
     return fabsf(a->im) <= eps * sqrtf(a->re * a->re + a->im * a->im);
 }
 
-/* Compute biquad coefficients from a pole pair and zero pair.
-   Poles p1,p2 and zeros z1,z2 are either both real or conjugate pairs. */
+/**
+ * @brief 由一对极点与一对零点计算 biquad 系数。
+ *
+ * 极点 p1,p2 与零点 z1,z2 各自要么同为实数、要么互为共轭。
+ *
+ * @param[in]  p1  第一个极点。
+ * @param[in]  p2  第二个极点。
+ * @param[in]  z1  第一个零点。
+ * @param[in]  z2  第二个零点。
+ * @param[out] b   分子系数 [b1, b2]（b0 恒为 1）。
+ * @param[out] a   分母系数 [a1, a2]（a0 恒为 1）。
+ */
 static void make_biquad(const complex_t *p1, const complex_t *p2,
                         const complex_t *z1, const complex_t *z2,
                         float *b, float *a)
@@ -272,14 +321,34 @@ static void make_biquad(const complex_t *p1, const complex_t *p2,
     b[2] = z1->re * z2->re - z1->im * z2->im;
 }
 
-/* Complex multiply: r = a * b. */
+/**
+ * @brief 复数乘法：r = a · b。
+ *
+ * @param[out] rr  结果实部。
+ * @param[out] ri  结果虚部。
+ * @param[in]  ar  乘数 a 的实部。
+ * @param[in]  ai  乘数 a 的虚部。
+ * @param[in]  br  乘数 b 的实部。
+ * @param[in]  bi  乘数 b 的虚部。
+ */
 static void c_mul(float *rr, float *ri, float ar, float ai, float br, float bi)
 {
     *rr = ar * br - ai * bi;
     *ri = ar * bi + ai * br;
 }
 
-/* Complex divide: r = a / b  (b ≠ 0). */
+/**
+ * @brief 复数除法：r = a / b（b ≠ 0）。
+ *
+ * b 为零时结果置 0（防御路径；正常流程不会发生）。
+ *
+ * @param[out] rr  结果实部。
+ * @param[out] ri  结果虚部。
+ * @param[in]  ar  被除数 a 的实部。
+ * @param[in]  ai  被除数 a 的虚部。
+ * @param[in]  br  除数 b 的实部。
+ * @param[in]  bi  除数 b 的虚部。
+ */
 static void c_div(float *rr, float *ri, float ar, float ai, float br, float bi)
 {
     float den = br * br + bi * bi;
@@ -367,7 +436,16 @@ float bilinear_zpk_gain_scaled(float k, float s, uint8_t degree,
     return rr; /* imaginary part cancels for conjugate pairs */
 }
 
-/* Find index of the pole closest to the unit circle (largest magnitude). */
+/**
+ * @brief 找离单位圆最近的未用极点（幅值最大者）。
+ *
+ * 调用前提：至少存在一个未用元素。
+ *
+ * @param[in] poles  极点数组。
+ * @param[in] used   已用位图。
+ * @param[in] n      数组长度。
+ * @return           最不利极点的下标。
+ */
 static uint8_t find_worst_pole(const complex_t *poles, const uint8_t *used, uint8_t n)
 {
     uint8_t idx = 0;
@@ -383,7 +461,17 @@ static uint8_t find_worst_pole(const complex_t *poles, const uint8_t *used, uint
     return idx;
 }
 
-/* Find index of the (used) element nearest to target. */
+/**
+ * @brief 找未用元素中离 target 最近者的下标。
+ *
+ * 调用前提：至少存在一个未用元素。
+ *
+ * @param[in] arr     数组。
+ * @param[in] used    已用位图。
+ * @param[in] n       数组长度。
+ * @param[in] target  目标点。
+ * @return            最近元素的下标。
+ */
 static uint8_t find_nearest(const complex_t *arr, const uint8_t *used, uint8_t n,
                             const complex_t *target)
 {
@@ -400,8 +488,19 @@ static uint8_t find_nearest(const complex_t *arr, const uint8_t *used, uint8_t n
     return idx;
 }
 
-/* Like find_nearest, restricted to real (want_real=1) or complex elements.
-   Returns nearest distance via *best; 1e30f if no element matches. */
+/**
+ * @brief 同 find_nearest，但限定实数（want_real=1）或复数元素。
+ *
+ * @param[in]  arr       数组。
+ * @param[in]  used      已用位图。
+ * @param[in]  n         数组长度。
+ * @param[in]  target    目标点。
+ * @param[in]  want_real 1 只考虑实数元素，0 只考虑复数元素。
+ * @param[in]  eps       实/复分类容差。
+ * @param[out] best      最近距离；无匹配元素时为 1e30f。
+ * @return               下标（无匹配时以 *best == 1e30f 判定，
+ *                       返回值无意义）。
+ */
 static uint8_t find_nearest_typed(const complex_t *arr, const uint8_t *used,
                                   uint8_t n, const complex_t *target,
                                   int want_real, float eps, float *best)
@@ -420,7 +519,16 @@ static uint8_t find_nearest_typed(const complex_t *arr, const uint8_t *used,
     return idx;
 }
 
-/* Count unused elements with a given real/complex property. */
+/**
+ * @brief 统计未用元素中具有指定实/复性质的数量。
+ *
+ * @param[in] used      已用位图。
+ * @param[in] n         数组长度。
+ * @param[in] arr       数组（用于分类判定）。
+ * @param[in] want_real 1 统计实数元素，0 统计复数元素。
+ * @param[in] eps       实/复分类容差。
+ * @return               符合条件的未用元素个数。
+ */
 static uint8_t count_used(const uint8_t *used, uint8_t n,
                           const complex_t *arr, int want_real, float eps)
 {
@@ -433,10 +541,26 @@ static uint8_t count_used(const uint8_t *used, uint8_t n,
     return cnt;
 }
 
-/* Find the conjugate of arr[idx] among unused elements and mark it used.
-   Matching tolerance is relative: |candidate - conj(target)| <= eps * |target|.
-   On failure, synthesises the conjugate (no element consumed — the caller's
-   all-claimed invariant then fails closed). */
+/**
+ * @brief 在未用元素中认领 arr[idx] 的共轭并标记已用。
+ *
+ * 匹配为相对容差：|candidate − conj(target)| ≤ eps·|target|。
+ * 失败时合成共轭（不消耗任何元素——调用方的全认领不变量
+ * 随后 fail-closed）。
+ *
+ * @note 盒内取**最近**未用元素：取"第一个盒内"在高 Q BP/BS 簇
+ *       （对间距 ~8e-4 < 盒 ~1e-3）会偷走别对的伴侣，两节部署成
+ *       完全重复、丢失一对，终态不变量检测不到（间距小于其
+ *       1e-3 匹配容差）。最近共轭在双线性 f32 噪声（~2e-4）与
+ *       外来对（~8e-4）之间正确选中真伴侣。
+ *
+ * @param[in]     arr  数组。
+ * @param[in,out] used 已用位图（命中时置位）。
+ * @param[in]     n    数组长度。
+ * @param[in]     idx  目标元素下标（调用方须已置 used[idx]）。
+ * @param[out]    out  共轭元素（命中为对称平均对，未命中为合成值）。
+ * @param[in]     eps  相对匹配容差。
+ */
 static void claim_conjugate(const complex_t *arr, uint8_t *used, uint8_t n,
                             uint8_t idx, complex_t *out, float eps)
 {
@@ -444,14 +568,6 @@ static void claim_conjugate(const complex_t *arr, uint8_t *used, uint8_t n,
     float ti = arr[idx].im;
     float mag = sqrtf(tr * tr + ti * ti);
     float thresh = eps * (mag > 1e-12f ? mag : 1.0f);
-    /* Pick the unused element NEAREST to conj(target) inside the box.
-       Taking the first in-box element mispairs in high-Q BP/BS clusters
-       where inter-pair spacing (~8e-4) is smaller than the box (~1e-3):
-       a pole steals another pair's mate, two sections deploy as exact
-       duplicates while a distinct pair is dropped, and the end invariants
-       cannot detect the swap (spacing < their 1e-3 match tolerance).
-       Nearest-to-conjugate picks the true mate (bilinear f32 noise
-       ~2e-4) over a foreign pair (~8e-4). */
     uint8_t best_i = n;
     float best_d = 1e30f;
     for (uint8_t i = 0; i < n; i++) {
@@ -481,8 +597,16 @@ static void claim_conjugate(const complex_t *arr, uint8_t *used, uint8_t n,
     out->im = -ti;
 }
 
-/* Roots of z² + c1·z + c2.  c2 == 0 → single finite root at −c1 (the
-   second root sits at infinity and is ignored).  Returns the count. */
+/**
+ * @brief 求 z² + c1·z + c2 的根。
+ *
+ * c2 == 0 → 唯一有限根 −c1（另一根在无穷远，忽略）。
+ *
+ * @param[in]  c1    一次项系数。
+ * @param[in]  c2    常数项系数。
+ * @param[out] roots 最多 2 个根。
+ * @return           根个数（1 或 2）。
+ */
 static uint8_t poly_roots(float c1, float c2, complex_t roots[2])
 {
     if (c2 == 0.0f) {
@@ -507,10 +631,21 @@ static uint8_t poly_roots(float c1, float c2, complex_t roots[2])
     return 2;
 }
 
-/* True if every root matches a distinct unused element of pool within tol
-   (Euclidean).  A multiset check: members of a tight pair may match either
-   way around, which is harmless — what it rejects is a root that reproduces
-   no input element at all (duplicated pair displacing a real one). */
+/**
+ * @brief 多重集匹配：roots 的每个根须命中 pool 中一个不同的
+ *        未匹配元素（欧氏容差）。
+ *
+ * 紧对成员允许互换命中——无害；拒绝的是复现不出任何输入元素
+ * 的根（重复对挤掉实数元素的情形）。
+ *
+ * @param[in]     roots    待匹配根数组。
+ * @param[in]     nr       根个数。
+ * @param[in]     pool     输入池。
+ * @param[in]     n        池大小。
+ * @param[in,out] matched  匹配位图（命中时置位）。
+ * @param[in]     tol      欧氏容差。
+ * @return                 全部命中返回 1。
+ */
 static int match_roots(const complex_t *roots, uint8_t nr,
                        const complex_t *pool, uint8_t n,
                        uint8_t *matched, float tol)

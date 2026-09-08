@@ -15,8 +15,17 @@ static int failures = 0;
 
 #define CLOSE(a, b, eps) (fabsf((a) - (b)) <= (eps))
 
-/* Classify the zeros of all sections: counts of +1, -1, unit-circle
-   conjugate pairs, and anything else (stray zeros). */
+/**
+ * @brief 分类统计各节零点：+1、−1、单位圆共轭对的数量，
+ *        以及其余（游离零点）。
+ *
+ * @param[in]  secs      biquad 节级联。
+ * @param[in]  ns        节数。
+ * @param[out] n_plus1   z = +1 零点个数。
+ * @param[out] n_minus1  z = −1 零点个数。
+ * @param[out] n_unit    单位圆共轭零点对数。
+ * @param[out] n_other   其余零点个数。
+ */
 static void section_zeros_stats(biquad_filter_t *secs, int ns,
                                 int *n_plus1, int *n_minus1,
                                 int *n_unit, int *n_other)
@@ -44,7 +53,16 @@ static void section_zeros_stats(biquad_filter_t *secs, int ns,
     }
 }
 
-/* Steady-state amplitude of a sine at freq through the cascade. */
+/**
+ * @brief 测频率 freq 的正弦流过级联后的稳态幅值。
+ *
+ * @param[in] secs   biquad 节级联。
+ * @param[in] ns     节数。
+ * @param[in] freq   测试正弦频率（Hz）。
+ * @param[in] fs     采样频率（Hz）。
+ * @param[in] steps  总采样点数。
+ * @return           后 1/4 样本的峰值幅值。
+ */
 static float measure_gain_at(biquad_filter_t *secs, uint8_t ns,
                              float freq, float fs, int steps)
 {
@@ -69,7 +87,14 @@ static float measure_gain_at(biquad_filter_t *secs, uint8_t ns,
     return max_out;
 }
 
-/* Steady-state gain for the Nyquist tone (alternating ±1). */
+/**
+ * @brief 测 Nyquist 音（交替 ±1）的稳态增益。
+ *
+ * @param[in] secs   biquad 节级联。
+ * @param[in] ns     节数。
+ * @param[in] steps  总采样点数。
+ * @return           后 1/4 样本的峰值幅值。
+ */
 static float measure_nyquist_gain(biquad_filter_t *secs, uint8_t ns, int steps)
 {
     float x = 0.0f;
@@ -91,7 +116,13 @@ static float measure_nyquist_gain(biquad_filter_t *secs, uint8_t ns, int steps)
     return max_out;
 }
 
-/* Analytic cascade DC/Nyquist gains from section coefficients. */
+/**
+ * @brief 由节系数解析计算级联 DC 增益。
+ *
+ * @param[in] secs  biquad 节级联。
+ * @param[in] ns    节数。
+ * @return          H(1)。
+ */
 static float cascade_dc_gain(const biquad_filter_t *secs, uint8_t ns)
 {
     float h = 1.0f;
@@ -101,6 +132,13 @@ static float cascade_dc_gain(const biquad_filter_t *secs, uint8_t ns)
     return h;
 }
 
+/**
+ * @brief 由节系数解析计算级联 Nyquist 增益。
+ *
+ * @param[in] secs  biquad 节级联。
+ * @param[in] ns    节数。
+ * @return          H(−1)。
+ */
 static float cascade_nyq_gain(const biquad_filter_t *secs, uint8_t ns)
 {
     float h = 1.0f;
@@ -110,7 +148,15 @@ static float cascade_nyq_gain(const biquad_filter_t *secs, uint8_t ns)
     return h;
 }
 
-/* Max steady-state gain over a fixed frequency grid. */
+/**
+ * @brief 固定频率网格上的最大稳态增益。
+ *
+ * @param[in] secs   biquad 节级联。
+ * @param[in] ns     节数。
+ * @param[in] fs     采样频率（Hz）。
+ * @param[in] steps  每个频点的采样点数。
+ * @return           网格上的最大峰值幅值。
+ */
 static float max_gain_over(biquad_filter_t *secs, uint8_t ns,
                            float fs, int steps)
 {
@@ -428,6 +474,136 @@ int main(void)
                 float swb = 2.0f * powf(10.0f, sw_lp_rp[sw_ri] / 20.0f); \
                 y = max_gain_over(swf.sections, swf.num_sections, 1000.0f, 2000); \
                 CHECK(y < swb, "sweep cheby1 LP " #ol " max|H| sane"); \
+            } \
+        }
+    FOR_EACH_CHEBY_LP_ORDER
+    #undef X
+
+    /* ── Sweep: cheby1 HP/BP/BS 全阶矩阵 ───────────────────────────────
+       补齐 X-macro 生成 init 的测试覆盖（LP 已有全阶扫掠）。
+       init 内部已做级联增益校验，此处复核窗口并约束 max|H|。────── */
+
+    #define X(ord, ns, ol) \
+        for (int sw_fi = 0; sw_fi < 2; sw_fi++) \
+        for (int sw_ri = 0; sw_ri < 2; sw_ri++) { \
+            cheby1_hp_##ol##_t swf; \
+            swf.valid = 0; \
+            cheby1_hp_##ol##_init(&swf, sw_lp_fc[sw_fi], 1000.0f, sw_lp_rp[sw_ri]); \
+            CHECK(swf.valid == 1, "sweep cheby1 HP " #ol " valid"); \
+            if (swf.valid) { \
+                float swg = ((ord) % 2 == 0) \
+                          ? powf(10.0f, -sw_lp_rp[sw_ri] / 20.0f) : 1.0f; \
+                float swt = (swg == 1.0f) ? 0.1f : 0.25f; \
+                y = cascade_dc_gain(swf.sections, swf.num_sections); \
+                CHECK(fabsf(y) <= 0.1f, "sweep cheby1 HP " #ol " DC window"); \
+                y = cascade_nyq_gain(swf.sections, swf.num_sections); \
+                CHECK(fabsf(y - swg) <= swt, "sweep cheby1 HP " #ol " Nyq window"); \
+                float swb = 2.0f * powf(10.0f, sw_lp_rp[sw_ri] / 20.0f); \
+                y = max_gain_over(swf.sections, swf.num_sections, 1000.0f, 2000); \
+                CHECK(y < swb, "sweep cheby1 HP " #ol " max|H| sane"); \
+            } \
+        }
+    FOR_EACH_CHEBY_LP_ORDER
+    #undef X
+
+    #define X(ord, ns, ol) \
+        for (int sw_bi = 0; sw_bi < 3; sw_bi++) \
+        for (int sw_ri = 0; sw_ri < 2; sw_ri++) { \
+            cheby1_bp_##ol##_t swf; \
+            swf.valid = 0; \
+            cheby1_bp_##ol##_init(&swf, sw_bands[sw_bi][0], sw_bands[sw_bi][1], \
+                                  1000.0f, sw_lp_rp[sw_ri]); \
+            /* 7 阶 × [20,480] × rp=3：带边上沿逼近 Nyquist，极点进入 \
+               z=+1 近旁 5e-5 裕量内——fail-closed 拒绝属预期 \
+               （CLAUDE.md 频率包络）。 */ \
+            uint8_t sw_ok = ((ord) == 7 && (sw_bi) == 1 && (sw_ri) == 1) ? 0 : 1; \
+            CHECK(swf.valid == sw_ok, "sweep cheby1 BP " #ol " valid"); \
+            if (swf.valid) { \
+                y = cascade_dc_gain(swf.sections, swf.num_sections); \
+                CHECK(fabsf(y) <= 0.1f, "sweep cheby1 BP " #ol " DC window"); \
+                y = cascade_nyq_gain(swf.sections, swf.num_sections); \
+                CHECK(fabsf(y) <= 0.1f, "sweep cheby1 BP " #ol " Nyq window"); \
+                float swb = 2.0f * powf(10.0f, sw_lp_rp[sw_ri] / 20.0f); \
+                y = max_gain_over(swf.sections, swf.num_sections, 1000.0f, 2000); \
+                CHECK(y < swb, "sweep cheby1 BP " #ol " max|H| sane"); \
+            } \
+        }
+    FOR_EACH_CHEBY_BP_ORDER
+    #undef X
+
+    #define X(ord, ns, ol) \
+        for (int sw_bi = 0; sw_bi < 2; sw_bi++) \
+        for (int sw_ri = 0; sw_ri < 2; sw_ri++) { \
+            cheby1_bs_##ol##_t swf; \
+            swf.valid = 0; \
+            /* BS 只取前 2 个频带：[10,499] 超宽带下解析响应正确， \
+               但时域 f32 DF-II 状态噪声被近单位圆极点放大（6~8 阶 \
+               max|H| 实测 291~5.2e7），超出库的实用包络。 */ \
+            cheby1_bs_##ol##_init(&swf, sw_bands[sw_bi][0], sw_bands[sw_bi][1], \
+                                  1000.0f, sw_lp_rp[sw_ri]); \
+            CHECK(swf.valid == 1, "sweep cheby1 BS " #ol " valid"); \
+            if (swf.valid) { \
+                float swg = ((ord) % 2 == 0) \
+                          ? powf(10.0f, -sw_lp_rp[sw_ri] / 20.0f) : 1.0f; \
+                float swt = (swg == 1.0f) ? 0.1f : 0.25f; \
+                y = cascade_dc_gain(swf.sections, swf.num_sections); \
+                CHECK(fabsf(y - swg) <= swt, "sweep cheby1 BS " #ol " DC window"); \
+                y = cascade_nyq_gain(swf.sections, swf.num_sections); \
+                CHECK(fabsf(y - swg) <= swt, "sweep cheby1 BS " #ol " Nyq window"); \
+                float swb = 2.0f * powf(10.0f, sw_lp_rp[sw_ri] / 20.0f); \
+                y = max_gain_over(swf.sections, swf.num_sections, 1000.0f, 2000); \
+                CHECK(y < swb, "sweep cheby1 BS " #ol " max|H| sane"); \
+            } \
+        }
+    FOR_EACH_CHEBY_BP_ORDER
+    #undef X
+
+    /* ── Sweep: cheby2 LP/HP 全阶矩阵 ──────────────────────────────────
+       补齐 X-macro 生成 init 的测试覆盖（BP/BS 已有全阶扫掠）。───── */
+
+    #define X(ord, ns, ol) \
+        for (int sw_fi = 0; sw_fi < 2; sw_fi++) \
+        for (int sw_ri = 0; sw_ri < 2; sw_ri++) { \
+            cheby2_lp_##ol##_t swf; \
+            swf.valid = 0; \
+            cheby2_lp_##ol##_init(&swf, sw_lp_fc[sw_fi], 1000.0f, sw_rs[sw_ri]); \
+            CHECK(swf.valid == 1, "sweep cheby2 LP " #ol " valid"); \
+            if (swf.valid) { \
+                float swg = ((ord) % 2 == 0) \
+                          ? powf(10.0f, -sw_rs[sw_ri] / 20.0f) : 0.0f; \
+                float swt = (swg == 0.0f) ? 0.1f : 0.25f; \
+                y = cascade_dc_gain(swf.sections, swf.num_sections); \
+                CHECK(CLOSE(y, 1.0f, 0.1f), "sweep cheby2 LP " #ol " DC window"); \
+                y = cascade_nyq_gain(swf.sections, swf.num_sections); \
+                CHECK(fabsf(y - swg) <= swt, "sweep cheby2 LP " #ol " Nyq window"); \
+                y = max_gain_over(swf.sections, swf.num_sections, 1000.0f, 2000); \
+                CHECK(y < 2.0f, "sweep cheby2 LP " #ol " max|H| sane"); \
+            } \
+        }
+    FOR_EACH_CHEBY_LP_ORDER
+    #undef X
+
+    #define X(ord, ns, ol) \
+        for (int sw_fi = 0; sw_fi < 2; sw_fi++) \
+        for (int sw_ri = 0; sw_ri < 2; sw_ri++) { \
+            cheby2_hp_##ol##_t swf; \
+            swf.valid = 0; \
+            cheby2_hp_##ol##_init(&swf, sw_lp_fc[sw_fi], 1000.0f, sw_rs[sw_ri]); \
+            /* 5 阶 × fc=480 × rs=0.5：截止频率 0.96·Nyquist，极点进入 \
+               z=−1 近旁 5e-5 裕量内——fail-closed 拒绝属预期 \
+               （CLAUDE.md 频率包络）。 */ \
+            uint8_t sw_ok = ((ord) == 5 && (sw_fi) == 1 && (sw_ri) == 0) ? 0 : 1; \
+            CHECK(swf.valid == sw_ok, "sweep cheby2 HP " #ol " valid"); \
+            if (swf.valid) { \
+                float swg = ((ord) % 2 == 0) \
+                          ? powf(10.0f, -sw_rs[sw_ri] / 20.0f) : 0.0f; \
+                float swt = (swg == 0.0f) ? 0.1f : 0.25f; \
+                y = cascade_dc_gain(swf.sections, swf.num_sections); \
+                CHECK(fabsf(y - swg) <= swt, "sweep cheby2 HP " #ol " DC window"); \
+                y = cascade_nyq_gain(swf.sections, swf.num_sections); \
+                CHECK(CLOSE(y, 1.0f, 0.1f), "sweep cheby2 HP " #ol " Nyq window"); \
+                y = max_gain_over(swf.sections, swf.num_sections, 1000.0f, 2000); \
+                CHECK(y < 2.0f, "sweep cheby2 HP " #ol " max|H| sane"); \
             } \
         }
     FOR_EACH_CHEBY_LP_ORDER
