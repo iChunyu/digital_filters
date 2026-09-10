@@ -38,8 +38,8 @@ cmake --build build
 cd build && ctest --output-on-failure
 ```
 
-预期输出：**6 项测试全部通过**（前 3 项为 C 单元/回归测试；后 3 项为 CSV
-生成 + scipy 黄金参考对比，未安装 numpy/scipy 时自动 SKIP）。
+预期输出：**7 项测试全部通过**（前 3 项为 C 单元/回归测试；后 4 项为 CSV
+生成 + scipy 黄金参考对比 + zpk 增益精度验证，未安装 numpy/scipy 时自动 SKIP）。
 
 ### 基本用法
 
@@ -152,15 +152,19 @@ C 代码生成 CSV → scipy 做黄金参考 → 对比稳态精度（跳过瞬�
 
 - **零 `malloc`**：`<stdlib.h>` 不需要，堆管理器关掉照样跑
 - Butterworth init **不调 `cosf`/`sinf`**（ROM 查表）；`biquad_filter_init`
-  / `update` 路径**完全不依赖 libm**（裕量检查为纯乘加代数形式）——
-  裸机固件不链 libm 也能用 biquad 层
+  / `update` 路径**完全不依赖 libm**（裕量检查为纯乘加代数形式，绝对值用本地
+  `abs_f` 而非 `fabsf`，不依赖编译器内建）——裸机固件不链 libm 也能用
+  biquad 层（`-fno-builtin -ffreestanding` 下 `nm -u biquad_filter.o` 实测为空）
 - Chebyshev init 需 `logf`/`sqrtf`/`sinhf`/`coshf`（仅 init 一次，非逐采样）
 - `_update`/`_reset` 全部为**头文件 `static inline`**：每样本路径是带字面量
   节数的 biquad 级联循环，没有函数调用、没有运行时节数装载
 - 全部 `float`，零 `double`
 - **flash 粒度**：库以 `-ffunction-sections/-fdata-sections` 编译，链接时
   加 `--gc-sections`（或对应链接器选项）后，只拉入实际用到的滤波器族
-  （实测 butter_lp_2nd 单独使用：29.4 KB → 20.9 KB text）
+  （实测 arm-none-eabi-gcc / Cortex-M4 / -O2：库四个目标文件 .text 合计
+  19.8 KB，而只用 `butter_lp_2nd` 的程序链接后 text 仅 1.4 KB）。缺这些标志
+  时链接器按目标文件粒度拉取，`butter_filter.o` 会整体（4.3 KB，含全部
+  32 个 init）被拉入
 
 ### 参数校验与 fail-closed 语义
 

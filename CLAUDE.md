@@ -2,6 +2,15 @@
 
 本文件为 Claude Code (claude.ai/code) 在此仓库中工作时提供指引。
 
+## 代码约定
+
+**注释一律用中文**——包括 `.c` / `.h` 的 `/* */` 与 doxygen 块、构建脚本的 `#`、
+Python 的 `#` 与 docstring。代码标识符、数学记号、单位、外部专有名词（`scipy`、
+`Butterworth`、`Dekker`、函数名、类型名）保持原样，不要硬译。
+
+正文用中文说明，标识符/公式原样嵌入，例如：
+`/* 极点倒序遍历变换，避免覆盖尚未读取的元素。 */`
+
 ## 构建与测试
 
 ```bash
@@ -17,16 +26,21 @@ cd build && ctest --output-on-failure
 **FPU 要求**: 所有滤波器 `_update` 路径执行密集 float 运算。建议使用带硬件 FPU 的 MCU（Cortex-M4/M7 及以上）。
 
 **栈需求**: init 期间峰值约 800 字节（`design_filter` → `zpk2sos` 调用链：poles 128 B
-+ zeros 128 B + sos 192 B ≈ 448 B，加上调用侧原型数组 ~128 B；该数值在 -O2 下实测成立，
--O0 下约 1.1 KB）。运行时 `_update` 全 inline（biquad → 级联 → 逐阶函数三层全部
-头文件内联），无额外栈开销。建议 MCU 主栈 ≥ 2 KB。
++ zeros 128 B + sos 192 B ≈ 448 B，加上调用侧原型数组 ~128 B；该数值在 x86-64 -O2 下
+实测成立，-O0 下约 1.1 KB）。ARM Cortex-M4 `-Os -fstack-usage` 实测最坏一条链为
+`cheby2_lp_init` 208 B + `design_filter` 544 B + `zpk2sos` 192 B ≈ 944 B。
+运行时 `_update` 全 inline（biquad → 级联 → 逐阶函数三层全部
+头文件内联），无额外栈开销。建议 MCU 主栈 ≥ 2 KB（两平台实测峰值均有 2× 以上余量）。
 
 **libm 依赖**: `biquad_filter_init`/`_update`/`_reset` 路径零 libm 调用（裕量为纯乘加
 代数式），裸机不链 libm 也可用 biquad 层。Butterworth init 无需 libm（ROM 查表）。
 Chebyshev init 需要 `logf/sqrtf/sinhf/coshf/cosf/sinf`（仅 init 时）。
 
 **Flash 粒度**: 库以 `-ffunction-sections/-fdata-sections` 编译；链接时加
-`--gc-sections` 只拉入用到的滤波器族（实测 butter_lp_2nd 单独使用 29.4 → 20.9 KB text）。
+`--gc-sections` 只拉入用到的滤波器族（实测 arm-none-eabi-gcc / Cortex-M4 / -O2：
+库四个目标文件 .text 合计 19.8 KB，而只用 `butter_lp_2nd` 的程序链接后 text 仅
+1.4 KB）。缺这些标志时链接器按目标文件粒度拉取，`butter_filter.o` 会整体
+（4.3 KB，含全部 32 个 init）被拉入。
 update/reset 为头文件 inline，不占库 text。
 
 **中断安全**: `_update` 和 `_reset` 不可重入。同一个滤波器结构体如果被 ISR 和主循环共享，需在调用 `_update` 前关中断或使用双缓冲。
@@ -67,8 +81,10 @@ butter_lp_2nd_t   cheby1_hp_3rd_t   cheby2_bs_5th_t  ...
 设计管线只有一份：`design_filter()`（`filter_utils.c`）——模拟原型 → 频率变换 →
 增益折叠 → 双线性 → `zpk2sos` → 部署。Butterworth 传 ROM 极点表 + `k=1, nz=0`；
 Chebyshev 运行时算原型传自己的 `k` 和有限零点。级联增益校验 `check_cascade_gains()`
-同样只有一份。fail-closed 咽喉点（k 有限非零、节数上限、逐节 init、增益窗口）
-全部单点维护。
+同样只有一份。fail-closed 咽喉点（输入边界 np/nz、k 有限非零、节数上限、
+逐节 init、增益窗口）全部单点维护。输入边界指 `np > ZPK2SOS_MAX_N` 或
+`nz > np` 直接返回 0——`design_filter` 是导出符号，其栈上工作数组容量固定
+（16）且 `degree = np - nz` 是 uint8_t，越界/下溢必须在入口拦下。
 
 对外 exposed 的 update/reset 按阶数/类型分别定义（如 `butter_lp_2nd_update`、
 `cheby1_bp_5th_reset`），调用时无需强转。它们是**头文件 X-macro 生成的
@@ -77,6 +93,8 @@ Chebyshev 运行时算原型传自己的 `k` 和有限零点。级联增益校�
 （96 个字节级相同的 out-of-line 副本曾占 ~12.8 KB flash + 每样本一次 BL）。
 
 - 只有 `_init` 按阶数分别定义，因为不同阶数需要不同大小的栈上临时数组
+- `valid == 0` 时 `num_sections` 恒为 0——init 的每条早退路径都显式清零，
+  调用方即使漏检 `valid` 也不会读到未初始化的节数
 - Butterworth 原型极点预计算为 `static const complex_t butter_proto[8][8]` 存入 ROM（~512 字节），
   init 时无需调用 `cosf`/`sinf`
 - Chebyshev 原型依赖 ripple，在 init 时运行时计算
@@ -172,4 +190,4 @@ Chebyshev 运行时算原型传自己的 `k` 和有限零点。级联增益校�
 | `test/compare_scipy.py` | 稳态精度对比（已注册 ctest，无 numpy/scipy 时 exit 77 SKIP） |
 | `test/verify_zpk_gain.py` | 验证 float32 精度足够 zpk 增益追踪（独立复现 scipy 管线，f64 vs f32） |
 | `CMakeLists.txt` | 顶层 CMake（库带 -ffunction-sections/-fdata-sections） |
-| `test/CMakeLists.txt` | 测试可执行文件 + CTest 注册（6 项，含 CSV 生成 + scipy 对比） |
+| `test/CMakeLists.txt` | 测试可执行文件 + CTest 注册（7 项，含 CSV 生成 + scipy 对比 + zpk 增益精度验证） |

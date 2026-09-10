@@ -7,6 +7,27 @@
 #include <math.h>
 
 /**
+ * @brief 浮点绝对值，不依赖 libm，也不依赖编译器内建。
+ *
+ * 与 `fabsf` 在所有输入上判定等价：有限值与 ±inf 逐位一致；-0.0f
+ * 返回 -0.0f（与 +0.0f 比较相等，本文件的用法全是幅值比较，不受
+ * 影响）；NaN 返回 NaN，而 `NaN >= x` 恒假，判定结果与 `fabsf(NaN)`
+ * 相同。
+ *
+ * 存在的理由：`fabsf` 在 GCC/Clang 上默认是内建并被内联，但
+ * `-fno-builtin` 下退化成真实的 libm 符号。本库对外承诺 biquad 层
+ * 零 libm 依赖（裸机不链 libm 也能用），这个承诺不该建立在编译器
+ * 的内建行为上。
+ *
+ * @param x  输入值。
+ * @return   |x|。
+ */
+static inline float abs_f(float x)
+{
+    return (x < 0.0f) ? -x : x;
+}
+
+/**
  * @brief 三项补偿求和（TwoSum 式）。
  *
  * 裸 f32 计算 1 + a1 + a2 在真余量为 1.0 的若干 ulp 时会恰好消成
@@ -24,10 +45,10 @@ static float sum3f(float x, float y, float z)
     float s = x;
     float c = 0.0f;
     float t = s + y;
-    c += (fabsf(s) >= fabsf(y)) ? (s - t) + y : (y - t) + s;
+    c += (abs_f(s) >= abs_f(y)) ? (s - t) + y : (y - t) + s;
     s = t;
     t = s + z;
-    c += (fabsf(s) >= fabsf(z)) ? (s - t) + z : (z - t) + s;
+    c += (abs_f(s) >= abs_f(z)) ? (s - t) + z : (z - t) + s;
     s = t;
     return s + c;
 }
@@ -77,15 +98,14 @@ void biquad_c2d_bilinear(float num_z[3], float den_z[3], const float num_s[3],
 uint8_t biquad_filter_init(biquad_filter_t *filter, const float num_z[3],
                            const float den_z[3])
 {
-    /* Reject zero/infinite leading denominator.  Zero divides by zero;
-       ±Inf would make inv = 0 and silently deploy an all-zero (silence)
-       filter — passthrough is the safer fallback. */
+    /* 拒绝为零/非有限的首项分母。零会导致除零；±Inf 会让 inv = 0，
+       悄悄部署出分子全零的"静音"滤波器——直通是更安全的兜底。 */
     if (den_z[0] == 0.0f || !isfinite(den_z[0])) {
         biquad_filter_set_empty(filter);
         return 0;
     }
 
-    /* Normalise so that den_z[0] == 1.0 */
+    /* 归一化，使 den_z[0] == 1.0 */
     float inv = 1.0f / den_z[0];
 
     filter->num_z[0] = num_z[0] * inv;
@@ -97,9 +117,8 @@ uint8_t biquad_filter_init(biquad_filter_t *filter, const float num_z[3],
     filter->den_z[2] = den_z[2] * inv;
 
     /*
-     * Reject non-finite coefficients (e.g. gain overflow in the design
-     * pipeline).  NaN/Inf numerators would otherwise pass the Jury check
-     * below — it only inspects the denominator — and poison the output.
+     * 拒绝非有限系数（例如设计管线里的增益溢出）。否则 NaN/Inf 分子会
+     * 通过下面的 Jury 检查——它只看分母——然后毒化输出。
      */
     if (!(isfinite(filter->num_z[0]) && isfinite(filter->num_z[1])
           && isfinite(filter->num_z[2]) && isfinite(filter->den_z[1])
@@ -109,18 +128,16 @@ uint8_t biquad_filter_init(biquad_filter_t *filter, const float num_z[3],
     }
 
     /*
-     * Stability check — all three Jury conditions for a 2nd-order system:
+     * 稳定性检查——二阶系统的三个 Jury 条件：
      *   |a2| < 1
      *   1 + a1 + a2 > 0
      *   1 - a1 + a2 > 0
-     * If any condition fails the filter is unstable; fall back to identity.
-     * The two Jury sums use compensated summation (see sum3f): naive f32
-     * evaluation cancels to exactly 0.0f for narrowband designs whose true
-     * residual is a few ulps of 1.0, spuriously rejecting stable filters.
-     * A compensated sum of EXACTLY 0.0f, by contrast, means the f32
-     * coefficients place a pole exactly on the unit circle (quantization
-     * has collapsed it onto z = ±1) — that one is genuinely rejectable,
-     * and the margin check below cannot resolve its radius.
+     * 任一条件不满足即不稳定；退回单位直通。
+     * 两个 Jury 和用补偿求和（见 sum3f）：对真余量为 1.0 的若干 ulp 的
+     * 窄带设计，裸 f32 求值会恰好消成 0.0f，把稳定滤波器误拒。
+     * 反过来，补偿和**恰好**为 0.0f 说明 f32 系数把极点放到了单位圆上
+     * （量化塌缩到 z = ±1）——那种确实该拒，且下面的裕量检查分辨不出
+     * 它的半径。
      */
     float a1 = filter->den_z[1];
     float a2 = filter->den_z[2];
@@ -133,29 +150,24 @@ uint8_t biquad_filter_init(biquad_filter_t *filter, const float num_z[3],
     }
 
     /*
-     * Stability margin.  The Jury conditions above accept poles arbitrarily
-     * close to the unit circle; in f32 a2 = 1 − 2⁻²⁴ passes and the filter
-     * rings for millions of samples (~6e-8 contraction per sample).  Reject
-     * any pole with radius r > 0.99995 (1 − r < 5e-5).
+     * 稳定性裕量。上面的 Jury 条件允许极点任意贴近单位圆；f32 下
+     * a2 = 1 − 2⁻²⁴ 照样通过，滤波器会振铃数百万个样本（每样本收缩
+     * ~6e-8）。拒绝任何半径 r > 0.99995（1 − r < 5e-5）的极点。
      *
-     * The check is evaluated on the pole radii themselves, not on a2:
-     * a2 = r1·r2 is blind to a dominant pole of an unequal real pair
-     * (r1 ≈ 1, r2 ≈ 0.85 → a2 ≈ 0.85 sails through), and a one-sided
-     * a2 > 0.9999 test misses real pairs of opposite sign (a2 ≈ −0.99995).
-     * For a conjugate pair r² = a2 (so r > 0.99995 ⟺ a2 > 0.9999); for
-     * real roots r_max = (|a1| + √(a1² − 4·a2)) / 2, rearranged so no
-     * sqrtf is needed — the biquad init path must stay callable from
-     * bare-metal firmware that links no libm.  The formula also covers
-     * first-order sections (a2 = 0 → r_max = |a1|).
+     * 判定按极点半径本身做，不按 a2：a2 = r1·r2 对非等实根对的主导极点
+     * 有盲区（r1 ≈ 1、r2 ≈ 0.85 → a2 ≈ 0.85 轻松过关），而单侧的
+     * a2 > 0.9999 检查会漏掉异号实根对（a2 ≈ −0.99995）。
+     * 共轭对 r² = a2（于是 r > 0.99995 ⟺ a2 > 0.9999）；实根
+     * r_max = (|a1| + √(a1² − 4·a2)) / 2，经过改写使其不需要 sqrtf——
+     * biquad init 路径必须保持可被不链 libm 的裸机固件调用。该公式
+     * 同样覆盖一阶节（a2 = 0 → r_max = |a1|）。
      *
-     * a1² − 4·a2 is computed with a Dekker-split compensation: wide-band
-     * BP/BS designs land near-real pole pairs within ~1e-4 of the unit
-     * circle, where the raw f32 discriminant carries ~5e-7 noise while the
-     * true value (e.g. −4·(imag part)² ≈ −1e-7) is no larger — the sign
-     * flip between the conjugate/real branches would turn the margin
-     * decision into a coin toss on legitimate designs.
+     * a1² − 4·a2 用 Dekker 分裂补偿计算：宽带 BP/BS 设计的近实极点对
+     * 落在距单位圆 ~1e-4 处，那里裸 f32 判别式带 ~5e-7 噪声，而真值
+     * （如 −4·(虚部)² ≈ −1e-7）并不更大——共轭/实根分支之间的符号翻转
+     * 会把裕量判定变成对合法设计的抛硬币。
      */
-    float p = a1 * 4097.0f;          /* Dekker split: a1 = hi + lo */
+    float p = a1 * 4097.0f;          /* Dekker 分裂：a1 = hi + lo */
     float hi = p - (p - a1);
     float lo = a1 - hi;
     float sq = a1 * a1;
@@ -163,10 +175,10 @@ uint8_t biquad_filter_init(biquad_filter_t *filter, const float num_z[3],
     float disc = (sq - 4.0f * a2) + err;
     int reject;
     if (disc < 0.0f) {
-        reject = a2 > 0.9999f;                 /* conjugate pair: a2 = r² */
+        reject = a2 > 0.9999f;                 /* 共轭对：a2 = r² */
     } else {
-        /* r_max > 0.99995  ⟺  √disc > 1.9999 − |a1|  (squared). */
-        float rhs = 1.9999f - fabsf(a1);
+        /* r_max > 0.99995  ⟺  √disc > 1.9999 − |a1|（两边平方）。 */
+        float rhs = 1.9999f - abs_f(a1);
         reject = (rhs < 0.0f) || (disc > rhs * rhs);
     }
     if (reject) {
@@ -197,9 +209,8 @@ float biquad_filter_get_input(const biquad_filter_t *filter)
 void biquad_filter_reset(biquad_filter_t *filter, float equilibrium)
 {
     /*
-     * Non-finite equilibrium would poison the state vector with NaN and
-     * propagate to every subsequent output.  Fall back to a zero state
-     * (the identity filter's own steady state) instead.
+     * 非有限的 equilibrium 会用 NaN 毒化状态向量，并传到此后每一个输出。
+     * 退回零状态（单位直通自身的稳态）。
      */
     if (!isfinite(equilibrium)) {
         biquad_zero_state(filter);
@@ -207,18 +218,15 @@ void biquad_filter_reset(biquad_filter_t *filter, float equilibrium)
     }
 
     /*
-     * Steady-state: x = const implies w[0]=w[1]=w[2]=w_ss.
-     * From the state equation:
+     * 稳态：x 为常数时 w[0]=w[1]=w[2]=w_ss。
+     * 由状态方程：
      *   x = w_ss + a1*w_ss + a2*w_ss  =>  w_ss = x / (1 + a1 + a2)
      *
-     * This is a public API on a fully public struct — the coefficients need
-     * not have passed biquad_filter_init().  Compensated summation keeps the
-     * f32 evaluation of the denominator from cancelling to exactly 0.0f on
-     * init-valid narrowband filters, and the guards below implement the
-     * @note contract: 1 + a1 + a2 == 0 (e.g. a pure integrator) has no
-     * steady state → force zero; a denormal-tiny denominator would make
-     * w_ss overflow to inf and poison every subsequent update with NaN,
-     * so force zero there too.
+     * 这是公开结构体上的公开 API——系数不必先经过 biquad_filter_init()。
+     * 补偿求和避免分母的 f32 求值在 init 通过的窄带滤波器上恰好消成
+     * 0.0f；下面的守卫实现 @note 里的契约：1 + a1 + a2 == 0（如纯积分器）
+     * 无稳态 → 强制清零；分母小到非规格化会让 w_ss 溢出为 inf、进而用
+     * NaN 毒化此后每次 update，所以在那里也强制清零。
      */
     float denom = sum3f(1.0f, filter->den_z[1], filter->den_z[2]);
     if (denom == 0.0f || !isfinite(denom)) {

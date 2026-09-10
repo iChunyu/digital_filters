@@ -22,7 +22,7 @@ extern "C" {
     float    ripple_db;    /* 通带纹波（Type I）或阻带衰减（Type II） */
 
 /* ── 阶数表（X-macro）────────────────────────────────────────────── */
-/* order, sections_for_lp_hp, ordinal_label */
+/* order 阶数, sections_for_lp_hp LP/HP 节数, ordinal_label 序数标签 */
 
 #define FOR_EACH_CHEBY_LP_ORDER \
     X(1, 1, 1st) \

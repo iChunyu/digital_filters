@@ -6,8 +6,21 @@
 
 float prewarp(float fd, float fs)
 {
-    if (fd <= 0.0f || fd >= fs * 0.5f) {
-        return fd; /* let caller clamp — degenerate case returns as-is */
+    /*
+     * Fail-closed。区间 (0, fs/2) 之外双线性映射无定义——过了 Nyquist，
+     * tan() 变号，根本不存在调用方能用的模拟频率——而旧实现把 fd 原样
+     * 返回，等于递回一个看着还挺像样的数而不是失败信号（旧的 "let caller
+     * clamp" 约定：其实没有任何调用方在 clamp）。NaN 会顺着 wc 传下去，
+     * 被 design_filter 的有限性闸拦掉，于是错误截止频率得到一个直通，
+     * 而不是一个悄悄错掉的滤波器。
+     *
+     * 写成取反比较，NaN 的 fd 或 fs 也会 fail-closed，而不是漏到 tanf()。
+     *
+     * 96 个族 init 调用前都已校验过 fc ∈ (0, fs/2)，所以行为变化只影响
+     * 直接调用这个导出辅助函数的用户。
+     */
+    if (!(fd > 0.0f) || !(fd < fs * 0.5f)) {
+        return NAN;
     }
     return fs / ((float)M_PI) * tanf((float)M_PI * fd / fs);
 }
@@ -80,21 +93,18 @@ void analog_hp_transform(complex_t *poles, uint8_t np,
 static complex_t c_sqrt(float re, float im)
 {
     complex_t r;
-    /* Scaled magnitude.  sqrt(re² + im²) computed naively squares first:
-       near-Nyquist BP/BS discriminants reach |re|,|im| ~ 1.5e10, whose
-       squares ~2.25e20 are representable, but the un-scaled expression
-       overflows once either component exceeds √FLT_MAX ≈ 1.8e19 and the
-       pipeline must keep working up to where prewarp's tanf() saturates.
-       Scaling by the largest component keeps every intermediate ≤ √2,
-       pushing the overflow cliff out to FLT_MAX itself (where the design
-       is non-finite anyway and fails closed downstream). */
+    /* 缩放幅值。裸算 sqrt(re² + im²) 要先平方：近 Nyquist 的 BP/BS 判别式
+       达到 |re|,|im| ~ 1.5e10，其平方 ~2.25e20 尚可表示，但任一分量超过
+       √FLT_MAX ≈ 1.8e19 后不缩放的写法就溢出了，而管线必须一直撑到
+       prewarp 的 tanf() 饱和处。按最大分量缩放让每个中间量 ≤ √2，把溢出
+       悬崖推到 FLT_MAX 本身（那里设计已经非有限，下游 fail-closed）。 */
     float m = fmaxf(fabsf(re), fabsf(im));
     if (m < 1e-20f) {
         r.re = 0.0f;
         r.im = 0.0f;
         return r;
     }
-    /* Handle negative-real case to avoid cancellation in (mag + re)/2. */
+    /* 处理负实部情形，避免 (mag + re)/2 中的灾难性消减。 */
     if (re < 0.0f && fabsf(im) < 1e-12f * fabsf(re)) {
         r.re = 0.0f;
         r.im = sqrtf(-re);
@@ -145,7 +155,7 @@ static void stable_roots(float B_re, float B_im, float C_re, float C_im,
     r1->im = 0.5f * (-B_im - sd.im);
 
     if (r1->re * r1->re + r1->im * r1->im < 1e-20f) {
-        /* Degenerate large root — fall back to the direct formula. */
+        /* 大根退化——退回直接公式。 */
         r2->re = 0.5f * (-B_re + sd.re);
         r2->im = 0.5f * (-B_im + sd.im);
     } else {
@@ -161,8 +171,8 @@ void analog_bp_transform(complex_t *poles, uint8_t *np,
     uint8_t nz_old = *nz;
     float w0_sq = w0 * w0;
 
-    /* Transform poles backward to avoid clobbering.
-       s → (s² + w0²) / (xi·s)  ⇒  s² − xi·p·s + w0² = 0. */
+    /* 极点倒序遍历变换，避免覆盖尚未读取的元素。
+       s → (s² + w0²) / (xi·s)  ⇒  s² − xi·p·s + w0² = 0。 */
     for (int i = np_old - 1; i >= 0; i--) {
         stable_roots(-xi * poles[i].re, -xi * poles[i].im,
                      w0_sq, 0.0f,
@@ -170,15 +180,15 @@ void analog_bp_transform(complex_t *poles, uint8_t *np,
     }
     *np = 2 * np_old;
 
-    /* Transform finite zeros with the same formula. */
+    /* 有限零点用同一公式变换。 */
     for (int i = nz_old - 1; i >= 0; i--) {
         stable_roots(-xi * zeros[i].re, -xi * zeros[i].im,
                      w0_sq, 0.0f,
                      &zeros[2 * i], &zeros[2 * i + 1]);
     }
 
-    /* Append (np_old − nz_old) zeros at the origin for infinite prototype zeros.
-       These map to z = +1 after bilinear transform. */
+    /* 为原型中的无穷远零点补 (np_old − nz_old) 个原点零点。
+       双线性变换后它们映射到 z = +1。 */
     for (uint8_t i = 0; i < np_old - nz_old; i++) {
         zeros[2 * nz_old + i].re = 0.0f;
         zeros[2 * nz_old + i].im = 0.0f;
@@ -196,14 +206,14 @@ void analog_bs_transform(complex_t *poles, uint8_t *np,
     uint8_t nz_old = *nz;
     float w0_sq = w0 * w0;
 
-    /* Transform poles backward.  p → ξ·s / (s² + ω₀²)
-       ⇒  s² − (ξ/p)·s + ω₀² = 0. */
+    /* 极点倒序遍历变换。p → ξ·s / (s² + ω₀²)
+       ⇒  s² − (ξ/p)·s + ω₀² = 0。 */
     for (int i = np_old - 1; i >= 0; i--) {
         float pr = poles[i].re;
         float pi = poles[i].im;
         float mag2 = pr * pr + pi * pi;
         if (mag2 < 1e-20f) {
-            /* Degenerate: leave as-is (should not happen for stable prototypes). */
+            /* 退化情形：原样保留（稳定原型不应出现）。 */
             poles[2 * i].re     = poles[i].re;
             poles[2 * i].im     = poles[i].im;
             poles[2 * i + 1].re = poles[i].re;
@@ -218,7 +228,7 @@ void analog_bs_transform(complex_t *poles, uint8_t *np,
     }
     *np = 2 * np_old;
 
-    /* Transform finite zeros with the same formula. */
+    /* 有限零点用同一公式变换。 */
     for (int i = nz_old - 1; i >= 0; i--) {
         float zr = zeros[i].re;
         float zi = zeros[i].im;
@@ -237,7 +247,7 @@ void analog_bs_transform(complex_t *poles, uint8_t *np,
                      &zeros[2 * i], &zeros[2 * i + 1]);
     }
 
-    /* Append 2·(np_old − nz_old) zeros at ±jω₀ for infinite prototype zeros. */
+    /* 为原型中的无穷远零点补 2·(np_old − nz_old) 个 ±jω₀ 零点。 */
     for (uint8_t i = 0; i < np_old - nz_old; i++) {
         zeros[2 * nz_old + 2 * i].re     =  0.0f;
         zeros[2 * nz_old + 2 * i].im     =  w0;
@@ -258,7 +268,7 @@ void bilinear_transform(complex_t *zp, uint8_t n, float fs)
         float s_re = zp[i].re;
         float s_im = zp[i].im;
 
-        /* z = (K + s) / (K - s) = (K + s)(K - conj(s)) / |K - s|^2 */
+        /* z = (K + s) / (K - s) = (K + s)(K - conj(s)) / |K − s|² */
         float den = K2 - 2.0f * K * s_re + s_re * s_re + s_im * s_im;
 
         zp[i].re = (K2 - s_re * s_re - s_im * s_im) / den;
@@ -310,12 +320,12 @@ static void make_biquad(const complex_t *p1, const complex_t *p2,
                         const complex_t *z1, const complex_t *z2,
                         float *b, float *a)
 {
-    /* a1 = -(p1 + p2),  a2 = p1 * p2 */
+    /* a1 = −(p1 + p2)，a2 = p1 · p2 */
     a[0] = -(p1->re + p2->re);          /* a1 */
-    a[1] = p1->re * p2->re - p1->im * p2->im;  /* a2 = Re(p1*p2)      */
-    /* (when conjugates this is just |p1|^2; when real im=0 so fine)   */
+    a[1] = p1->re * p2->re - p1->im * p2->im;  /* a2 = Re(p1·p2)      */
+    /* （共轭时即 |p1|²；实数时 im = 0，同样成立）                     */
 
-    /* b0 = 1, b1 = -(z1 + z2), b2 = z1 * z2 */
+    /* b0 = 1，b1 = −(z1 + z2)，b2 = z1 · z2 */
     b[0] = 1.0f;
     b[1] = -(z1->re + z2->re);
     b[2] = z1->re * z2->re - z1->im * z2->im;
@@ -358,17 +368,17 @@ static void c_div(float *rr, float *ri, float ar, float ai, float br, float bi)
 }
 
 /* ================================================================== */
-/*  ZPK gain helpers (mirrors scipy zpk gain tracking)                */
+/*  ZPK 增益辅助（对齐 scipy 的 zpk 增益追踪）                         */
 /* ================================================================== */
 
 float zpk_hp_bs_gain(float k, const complex_t *z, uint8_t nz,
                      const complex_t *p, uint8_t np)
 {
-    /* Compute k * ∏(−z_i) / ∏(−p_i) incrementally to avoid overflow. */
+    /* 增量计算 k · ∏(−z_i) / ∏(−p_i)，避免中间量溢出。 */
     float rr = k, ri = 0.0f;
     uint8_t i;
     for (i = 0; i < nz && i < np; i++) {
-        /* Multiply by (-z[i]), divide by (-p[i]). */
+        /* 乘 (−z[i])，除 (−p[i])。 */
         c_mul(&rr, &ri, rr, ri, -z[i].re, -z[i].im);
         c_div(&rr, &ri, rr, ri, -p[i].re, -p[i].im);
     }
@@ -376,13 +386,13 @@ float zpk_hp_bs_gain(float k, const complex_t *z, uint8_t nz,
         c_mul(&rr, &ri, rr, ri, -z[i].re, -z[i].im);
     for (; i < np; i++)
         c_div(&rr, &ri, rr, ri, -p[i].re, -p[i].im);
-    return rr; /* imaginary part cancels for conjugate pairs */
+    return rr; /* 共轭对下虚部相消 */
 }
 
 float bilinear_zpk_gain(float k, const complex_t *z, uint8_t nz,
                          const complex_t *p, uint8_t np, float K)
 {
-    /* Compute k * ∏(K−z_i) / ∏(K−p_i) incrementally to avoid overflow. */
+    /* 增量计算 k · ∏(K−z_i) / ∏(K−p_i)，避免中间量溢出。 */
     float rr = k, ri = 0.0f;
     uint8_t i;
     for (i = 0; i < nz && i < np; i++) {
@@ -400,14 +410,12 @@ float bilinear_zpk_gain_scaled(float k, float s, uint8_t degree,
                                const complex_t *z, uint8_t nz,
                                const complex_t *p, uint8_t np, float K)
 {
-    /* k · s^degree · ∏(K−z_i) / ∏(K−p_i) in interleaved order so the
-       running product stays bounded.  Computing s^degree standalone
-       overflows f32 for near-Nyquist LP/BP (e.g. wc^8 ≈ FLT_MAX) even
-       though the final k is small — the ∏(K−p) factors are the same size
-       as s (LP: |K−p| ≈ wc) but the cancellation never happens once an
-       intermediate has overflowed.  Pairing each s factor with one
-       (K−p) division keeps the per-step ratio s/|K−p| bounded (~1.03 for
-       wc = 63600, K = 2000). */
+    /* k · s^degree · ∏(K−z_i) / ∏(K−p_i)，按交错顺序计算让运行乘积始终有界。
+       单独先算 s^degree 会在近 Nyquist 的 LP/BP 上溢出 f32（如
+       wc^8 ≈ FLT_MAX），即使最终的 k 很小——∏(K−p) 各因子与 s 同量级
+       （LP：|K−p| ≈ wc），但一旦某个中间量溢出了，抵消就再也不会发生。
+       把每个 s 因子与一次 (K−p) 除法配对，每步比值 s/|K−p| 保持有界
+       （wc = 63600、K = 2000 时约 1.03）。 */
     float rr = k, ri = 0.0f;
     uint8_t i_s = 0, i_z = 0, i_p = 0;
 
@@ -433,7 +441,7 @@ float bilinear_zpk_gain_scaled(float k, float s, uint8_t degree,
             i_p++;
         }
     }
-    return rr; /* imaginary part cancels for conjugate pairs */
+    return rr; /* 共轭对下虚部相消 */
 }
 
 /**
@@ -584,15 +592,15 @@ static void claim_conjugate(const complex_t *arr, uint8_t *used, uint8_t n,
     }
     if (best_i != n) {
         used[best_i] = 1;
-        /* Average the pair (mirrors scipy _cplxreal).
-           arr[best_i] has opposite imag sign to arr[idx].
-           Return arr[best_i] averaged with conj(arr[idx]) so the caller
-           gets the true conjugate of the primary element. */
+        /* 对两点取平均（对齐 scipy 的 _cplxreal）。
+           arr[best_i] 的虚部符号与 arr[idx] 相反。
+           返回 arr[best_i] 与 conj(arr[idx]) 的平均，使调用方拿到
+           主元素的真共轭。 */
         out->re = 0.5f * (tr + arr[best_i].re);
         out->im = 0.5f * (arr[best_i].im - ti);
         return;
     }
-    /* Last resort: numerical mismatch — synthesise the conjugate. */
+    /* 最后手段：数值不匹配——直接合成共轭。 */
     out->re =  tr;
     out->im = -ti;
 }
@@ -667,11 +675,11 @@ static int match_roots(const complex_t *roots, uint8_t nr,
     return 1;
 }
 
-/* Maximum number of pole-zero pairs supported by zpk2sos.
- * 8th-order prototype → BP/BS doubles to 16. */
+/* zpk2sos 支持的最大零极点对数。
+ * 8 阶原型 → BP/BS 翻倍到 16。 */
 #define ZPK2SOS_MAX_N 16
 
-uint8_t zpk2sos(complex_t *zeros, complex_t *poles, uint8_t n,
+uint8_t zpk2sos(const complex_t *zeros, const complex_t *poles, uint8_t n,
                 float (*sos)[6], float k)
 {
     if (n == 0 || n > ZPK2SOS_MAX_N) return 0;
@@ -685,32 +693,27 @@ uint8_t zpk2sos(complex_t *zeros, complex_t *poles, uint8_t n,
     uint8_t n_z = n;
     uint8_t section = 0;
     uint8_t max_sections = (n + 1) / 2;
-    /* Real/complex CLASSIFICATION tolerance (eps_class) and conjugate
-       CLAIM box (eps_claim) are different quantities and must not share
-       one constant:
-       - Genuine real poles/zeros carry imaginary parts of exactly 0.0f —
-         every transform stage preserves real arithmetic for real inputs —
-         while genuine complex pairs have |im| ≥ ~1e-5 (≈ 2π·im(p)·fc1/fs
-         for the smallest representable wide bands).  1e-3 as a
-         classification tolerance was far too loose: wide-band BP/BS
-         designs produce legitimate near-real conjugate pairs with
-         |im| ~ 2.5e-4..6e-4, which got flattened to "real" and
-         cross-paired with a DIFFERENT pair's member — the manufactured
-         section sat with a pole exactly at z = 1 and the whole design
-         failed.  scipy's f64 equivalent is 100·eps; 100·eps_f32 ≈ 1.2e-5.
-       - The claim box must swallow the bilinear transform's f32 rounding,
-         which can split a conjugate pair by ~2e-4 absolute near the unit
-         circle (K² − |s|² cancellation): 1e-3 stays. */
+    /* 实/复分类容差（eps_class）与共轭认领盒（eps_claim）是两个不同的量，
+       不能共用一个常数：
+       - 真·实极点/零点的虚部严格为 0.0f——每一级变换对实数输入都保持
+         实数运算——而真·共轭对的 |im| ≥ ~1e-5（对可表示的最宽频带，
+         约为 2π·im(p)·fc1/fs）。用 1e-3 作分类容差太松：宽带 BP/BS 设计
+         会产生合法的近实共轭对，|im| ~ 2.5e-4..6e-4，被压平成"实"之后
+         与另一个对的成员跨对配对——造出来的节其极点恰好在 z = 1，
+         整个设计随之失败。scipy 的 f64 对应值是 100·eps；
+         100·eps_f32 ≈ 1.2e-5。
+       - 认领盒必须吞下双线性变换的 f32 舍入——它在单位圆附近可以把一个
+         共轭对劈开 ~2e-4 的绝对量（K² − |s|² 消减）：保持 1e-3。 */
     const float eps_class = 1e-5f;
     const float eps_claim = 1e-3f;
 
     while (n_p > 0) {
-        /* Safety caps: never exceed allocated rows
-           or decrement counters past zero. */
+        /* 安全上限：不超出已分配的行数，
+           也不把计数器减过零。 */
         if (section >= max_sections) break;
         if (n_z == 0) break;
 
-        /* 1. Pick the most unfavorable (largest |p|) remaining pole. */
+        /* 1. 挑出剩余极点中最不利的（|p| 最大）。 */
         uint8_t p1_i = find_worst_pole(poles, used_p, n);
         complex_t p1 = poles[p1_i];
         used_p[p1_i] = 1;
@@ -719,7 +722,7 @@ uint8_t zpk2sos(complex_t *zeros, complex_t *poles, uint8_t n,
         complex_t p2, z1, z2;
 
         if (is_real(&p1, eps_class)) {
-            /* p1 is real — try to pair with another real pole. */
+            /* p1 是实数——尝试与另一个实极点配对。 */
             if (count_used(used_p, n, poles, 1, eps_class) > 0) {
                 float best;
                 uint8_t p2_i = find_nearest_typed(poles, used_p, n, &p1,
@@ -728,10 +731,9 @@ uint8_t zpk2sos(complex_t *zeros, complex_t *poles, uint8_t n,
                 used_p[p2_i] = 1;
                 n_p--;
             } else {
-                /* No more real poles → first-order section with a real zero.
-                   If no real zero remains, the pole/zero sets are unbalanced;
-                   fail closed rather than flatten a complex zero into a real
-                   one and drop its conjugate from the cascade. */
+                /* 没有更多实极点 → 用实零点构成一阶节。
+                   若实零点也不剩，说明零极点集不平衡；此时 fail-closed，
+                   而不是把一个复零点压成实数、把它的共轭丢出级联。 */
                 float best;
                 uint8_t z1_i = find_nearest_typed(zeros, used_z, n, &p1,
                                                   1, eps_class, &best);
@@ -753,17 +755,17 @@ uint8_t zpk2sos(complex_t *zeros, complex_t *poles, uint8_t n,
                 continue;
             }
         } else {
-            /* p1 is complex — pair with its conjugate. */
+            /* p1 是复数——与其共轭配对。 */
             claim_conjugate(poles, used_p, n, p1_i, &p2, eps_claim);
             n_p--;
         }
 
-        /* 2. Match two zeros to this pole pair. */
+        /* 2. 为这对极点匹配两个零点。 */
         uint8_t z1_i = find_nearest(zeros, used_z, n, &p1);
 
         if (is_real(&zeros[z1_i], eps_class)) {
             if (count_used(used_z, n, zeros, 1, eps_class) > 1) {
-                /* Two real zeros available — use z1 and the nearest other real. */
+                /* 有两个实零点可用——取 z1 与最近的另一个实零点。 */
                 z1 = zeros[z1_i];
                 used_z[z1_i] = 1;
                 n_z--;
@@ -775,8 +777,8 @@ uint8_t zpk2sos(complex_t *zeros, complex_t *poles, uint8_t n,
                 used_z[z2_i] = 1;
                 n_z--;
             } else {
-                /* Only one real zero left — save it for a later 1st-order
-                   section and use a complex pair instead. */
+                /* 只剩一个实零点——留给后面的一阶节，
+                   这里改用一对复零点。 */
                 uint8_t best_i = z1_i;
                 float best_d = 1e30f;
                 for (uint8_t i = 0; i < n; i++) {
@@ -793,7 +795,7 @@ uint8_t zpk2sos(complex_t *zeros, complex_t *poles, uint8_t n,
                 n_z--;
             }
         } else {
-            /* z1 is complex — use it and its conjugate. */
+            /* z1 是复数——取它与其共轭。 */
             z1 = zeros[z1_i];
             used_z[z1_i] = 1;
             n_z--;
@@ -802,7 +804,7 @@ uint8_t zpk2sos(complex_t *zeros, complex_t *poles, uint8_t n,
             n_z--;
         }
 
-        /* 3. Compute biquad coefficients. */
+        /* 3. 计算 biquad 系数。 */
         float b[3], a[2];
         make_biquad(&p1, &p2, &z1, &z2, b, a);
 
@@ -815,19 +817,16 @@ uint8_t zpk2sos(complex_t *zeros, complex_t *poles, uint8_t n,
         section++;
     }
 
-    /* 3b. Invariant: every pole and zero must have been claimed.  A
-       synthesised conjugate leaves an unclaimed gap, meaning the n_p/n_z
-       bookkeeping diverged from the arrays and poles/zeros were silently
-       dropped from the cascade (observed: a misplaced near-duplicate
-       section displacing a missing low-Q pair → ~350x resonance).
-       Fail closed instead. */
+    /* 3b. 不变量：全部零极点都必须被认领。合成共轭会留下未被认领的空隙，
+       说明 n_p/n_z 记账与数组脱节、有零极点被悄悄丢出级联（实测：
+       一个错位的近重复节顶掉了一对低 Q 极点 → ~350 倍谐振）。
+       此时 fail-closed。 */
     for (uint8_t i = 0; i < n; i++) {
         if (!used_p[i] || !used_z[i]) return 0;
     }
 
-    /* 3c. Verify each section's roots reproduce the input pole/zero
-       multisets.  Guards against cross-pair misclaims that leave used[]
-       fully set yet pair the wrong elements together. */
+    /* 3c. 校验每节的根能否复现输入的零极点多重集。防的是跨对误认领——
+       used[] 全置位了，但配对配错了元素。 */
     {
         uint8_t matched[ZPK2SOS_MAX_N];
         float tol = 1e-3f;
@@ -846,7 +845,7 @@ uint8_t zpk2sos(complex_t *zeros, complex_t *poles, uint8_t n,
         }
     }
 
-    /* 4. Reverse section order: slowest poles last → fastest first. */
+    /* 4. 反转节顺序：最慢的极点排最后 → 最快的排最前。 */
     for (uint8_t i = 0; i < section / 2; i++) {
         for (uint8_t j = 0; j < 6; j++) {
             float tmp = sos[i][j];
@@ -855,7 +854,7 @@ uint8_t zpk2sos(complex_t *zeros, complex_t *poles, uint8_t n,
         }
     }
 
-    /* 5. Apply overall system gain to the first section numerator. */
+    /* 5. 把系统总增益施加到第一节的分子。 */
     sos[0][0] *= k;
     sos[0][1] *= k;
     sos[0][2] *= k;
@@ -864,14 +863,13 @@ uint8_t zpk2sos(complex_t *zeros, complex_t *poles, uint8_t n,
 }
 
 /* ================================================================== */
-/*  Shared design pipeline (Butterworth / Chebyshev)                   */
+/*  共享设计管线（Butterworth / Chebyshev）                            */
 /* ================================================================== */
 
 /*
- * Maximum prototype order after BP/BS transform: 2 × 8 = 16 poles/zeros,
- * ceil(16/2) = 8 sections.  Stack usage during init: poles (128 B) +
- * zeros (128 B) + sos (192 B) ≈ 448 B, plus the caller's prototype
- * arrays (~128 B) — the ~800 B peak documented in CLAUDE.md.
+ * BP/BS 变换后的最大原型阶数：2 × 8 = 16 个零极点，ceil(16/2) = 8 节。
+ * init 期间栈用量：poles（128 B）+ zeros（128 B）+ sos（192 B）≈ 448 B，
+ * 加上调用侧的原型数组（~128 B）——即 CLAUDE.md 记录的 ~800 B 峰值。
  */
 
 uint8_t design_filter(biquad_filter_t *sections, uint8_t max_sections,
@@ -881,20 +879,29 @@ uint8_t design_filter(biquad_filter_t *sections, uint8_t max_sections,
                       const complex_t *proto_poles, uint8_t np,
                       const complex_t *proto_zeros, uint8_t nz)
 {
+    /*
+     * Fail-closed 输入边界闸。这是管线此前唯一缺的咽喉点：下面的
+     * `poles`/`zeros` 只容纳 ZPK2SOS_MAX_N 个元素，而 `degree` 是
+     * uint8_t，所以超出包络的 np 会让 memcpy 越过栈数组，nz > np 则让
+     * 相对阶数下溢。树内调用方一律传 np <= 8（原型阶数），但
+     * design_filter 是对外导出的——宁可拒绝，也不要越界。
+     */
+    if (np == 0 || np > ZPK2SOS_MAX_N || nz > np) return 0;
+
     complex_t poles[ZPK2SOS_MAX_N];
     complex_t zeros[ZPK2SOS_MAX_N];
-    uint8_t degree = np - nz; /* prototype relative degree */
+    uint8_t degree = np - nz; /* 原型相对阶数 */
 
     memcpy(poles, proto_poles, (size_t)np * sizeof(complex_t));
     if (nz > 0 && proto_zeros != NULL) {
         memcpy(zeros, proto_zeros, (size_t)nz * sizeof(complex_t));
     }
 
-    /* LP/BP gain scaling: wc^degree (LP) or xi^degree (BP), folded into the
-       bilinear gain below (see bilinear_zpk_gain_scaled). */
+    /* LP/BP 增益缩放：wc^degree（LP）或 xi^degree（BP），折叠进下面的
+       双线性增益（见 bilinear_zpk_gain_scaled）。 */
     float gs = 0.0f;
 
-    /* 1. Analog frequency transform */
+    /* 1. 模拟频率变换 */
     switch (type) {
     case FILTER_LOWPASS:
         analog_lp_transform(poles, np, zeros, nz, wc1);
@@ -927,9 +934,9 @@ uint8_t design_filter(biquad_filter_t *sections, uint8_t max_sections,
         return 0;
     }
 
-    /* 2. Bilinear gain (on s-domain zp, before bilinear transform clobbers
-       them).  k == 0 deploys an all-zero-numerator (silence) filter — a
-       degenerate outcome, not a valid design. */
+    /* 2. 双线性增益（在 s 域零极点上算，须在双线性变换覆写它们之前）。
+       k == 0 会部署出分子全零的"静音"滤波器——那是退化结果，
+       不是有效设计。 */
     if (gs != 0.0f) {
         k = bilinear_zpk_gain_scaled(k, gs, degree, zeros, nz, poles, np,
                                      2.0f * fs);
@@ -938,11 +945,11 @@ uint8_t design_filter(biquad_filter_t *sections, uint8_t max_sections,
     }
     if (!isfinite(k) || k == 0.0f) return 0;
 
-    /* 3. Bilinear transform: s → z */
+    /* 3. 双线性变换：s → z */
     bilinear_transform(poles, np, fs);
     bilinear_transform(zeros, nz, fs);
 
-    /* 4. Zero-pad: prototype zeros at s=∞ → z = -1 (not for BS). */
+    /* 4. 补零：原型在 s=∞ 的零点 → z = −1（BS 不做）。 */
     if (type != FILTER_BANDSTOP) {
         for (uint8_t i = nz; i < np; i++) {
             zeros[i].re = -1.0f;
@@ -951,7 +958,7 @@ uint8_t design_filter(biquad_filter_t *sections, uint8_t max_sections,
         nz = np;
     }
 
-    /* 5. Pair poles and zeros → SOS coefficients. */
+    /* 5. 零极点配对 → SOS 系数。 */
     uint8_t ns = (np + 1) / 2;
     if (ns > max_sections) return 0;
 
@@ -959,7 +966,7 @@ uint8_t design_filter(biquad_filter_t *sections, uint8_t max_sections,
     uint8_t n_sections = zpk2sos(zeros, poles, np, sos, k);
     if (n_sections != ns) return 0;
 
-    /* 6. Deploy to biquad sections. */
+    /* 6. 部署到 biquad 节。 */
     for (uint8_t i = 0; i < n_sections; i++) {
         float num[3] = {sos[i][0], sos[i][1], sos[i][2]};
         float den[3] = {sos[i][3], sos[i][4], sos[i][5]};
@@ -973,6 +980,10 @@ uint8_t check_cascade_gains(const biquad_filter_t *sections,
                             uint8_t num_sections,
                             float dc_exp, float ny_exp)
 {
+    /* 空级联两端乘积都是 1.0，带阻类的 (1, 1) 期望会被空洞通过。0 节不是
+       设计——拒绝，而不是盖章放行。 */
+    if (num_sections == 0) return 0;
+
     float h0 = 1.0f, hn = 1.0f;
     for (uint8_t i = 0; i < num_sections; i++) {
         const biquad_filter_t *b = &sections[i];
@@ -981,12 +992,10 @@ uint8_t check_cascade_gains(const biquad_filter_t *sections,
         hn *= (b->num_z[0] - b->num_z[1] + b->num_z[2])
             / (1.0f - b->den_z[1] + b->den_z[2]);
     }
-    /* Exact structural gains (0 or 1, enforced by zeros at ±1) tolerate
-       ±0.1.  Ripple-edge gains (10^(−rp/rs/20) for cheby1/2 even orders)
-       sit on the steepest part of the response near the band edges, where
-       f32 bilinear warping shifts the ripple pattern; widen those to
-       ±0.25.  Calibration is in the header; the confirmed pairing defects
-       deviate by ≥ 0.45, still far outside either window. */
+    /* 精确结构增益（0 或 1，由 z = ±1 处的零点保证）容差取 ±0.1。
+       纹波边缘增益（cheby1/2 偶数阶的 10^(−rp/rs/20)）落在带边附近
+       响应最陡处，f32 双线性畸变会移动纹波图样；这些放宽到 ±0.25。
+       标定依据在头文件；已确认的配对缺陷偏差 ≥ 0.45，仍远在两个窗口之外。 */
     float tol0 = (dc_exp == 0.0f || dc_exp == 1.0f) ? 0.1f : 0.25f;
     float toln = (ny_exp == 0.0f || ny_exp == 1.0f) ? 0.1f : 0.25f;
     return fabsf(h0 - dc_exp) <= tol0 && fabsf(hn - ny_exp) <= toln;

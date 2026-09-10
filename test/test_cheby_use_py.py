@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Compare Chebyshev filter C outputs with scipy.
+"""把 Chebyshev 滤波器的 C 输出与 scipy 对比。
 
-Usage:
-  1. Build: cmake -B build && cmake --build build
-  2. Generate CSV: ./build/test/test_cheby_with_py
-  3. Run this script: python3 test/test_cheby_use_py.py
+用法：
+  1. 构建：cmake -B build && cmake --build build
+  2. 生成 CSV：./build/test/test_cheby_with_py
+  3. 运行本脚本：python3 test/test_cheby_use_py.py
 """
 
 import os
@@ -22,7 +22,7 @@ ORDER = 7
 INPUT_FREQ = 30.0
 
 FILTER_CONFIGS = [
-    # (title, scipy_fn, btype, dyn_col, sta_col, ripple, fc1, fc2)
+    # (标题, scipy_fn, btype, 动态列, 静态列, ripple, fc1, fc2)
     ("Chebyshev I LP",  signal.cheby1, "lowpass",  "cheby1_lp", "cheby1_lp",  3.0, FC_LP,  None),
     ("Chebyshev I HP",  signal.cheby1, "highpass", "cheby1_hp", "cheby1_hp",  3.0, FC_HP,  None),
     ("Chebyshev I BP",  signal.cheby1, "bandpass", "cheby1_bp", "cheby1_bp",  3.0, FC1_BP, FC2_BP),
@@ -40,7 +40,7 @@ BIN_FILE = os.path.join(DATA_DIR, "test_cheby_with_py")
 
 
 def ensure_csv():
-    """Generate CSV via C binary if it doesn't exist yet."""
+    """CSV 尚不存在时，调用 C 可执行文件生成。"""
     if os.path.isfile(CSV_FILE):
         return
     if not os.path.isfile(BIN_FILE):
@@ -81,7 +81,7 @@ def main():
         ax1.legend(loc="best")
         ax1.grid(True, alpha=0.3)
 
-        # Inset: last 100 points on amplitude
+        # 局部放大图：最后 100 个点的幅值
         n_zoom = min(100, len(t))
         ax1_ins = ax1.inset_axes([0.55, 0.55, 0.40, 0.40])
         ax1_ins.plot(t[-n_zoom:], x[-n_zoom:], color="gray", alpha=0.5)
@@ -101,7 +101,7 @@ def main():
         ax2.legend(loc="best")
         ax2.grid(True, alpha=0.3)
 
-        # Inset: last 100 error points
+        # 局部放大图：最后 100 个点的误差
         ax2_ins = ax2.inset_axes([0.55, 0.55, 0.40, 0.40])
         ax2_ins.plot(t[-n_zoom:], err_dyn[-n_zoom:], linestyle="--")
         ax2_ins.plot(t[-n_zoom:], err_sta[-n_zoom:], linestyle=":")

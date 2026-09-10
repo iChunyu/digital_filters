@@ -65,7 +65,7 @@ static uint8_t cheby2_proto(complex_t *poles, complex_t *zeros, uint8_t n,
         float theta = (float)(2 * (k + 1) + n - 1)
                     / (2.0f * (float)n) * (float)M_PI;
 
-        /* Pole: 1 / (Chebyshev I pole) */
+        /* 极点：1 / (Chebyshev I 极点) */
         float den = sinh_mu * sinh_mu * cosf(theta) * cosf(theta)
                   + cosh_mu * cosh_mu * sinf(theta) * sinf(theta);
         poles[k].re =  sinh_mu * cosf(theta) / den;
@@ -155,7 +155,7 @@ static uint8_t cheby1_lp_init(biquad_filter_t *sections,
                               wc, 0.0f, fs, k,
                               poles, order, NULL, 0);
     if (n == 0) return 0;
-    /* cheby1 LP: DC gain 1 (odd) / 10^(−rp/20) (even), Nyquist 0 */
+    /* cheby1 LP：DC 增益 1（奇数阶）/ 10^(−rp/20)（偶数阶），Nyquist 0 */
     if (!check_cascade_gains(sections, n,
                              cheby1_edge_gain(order, ripple_db), 0.0f)) return 0;
     return n;
@@ -197,7 +197,7 @@ static uint8_t cheby1_hp_init(biquad_filter_t *sections,
                               wc, 0.0f, fs, k,
                               poles, order, NULL, 0);
     if (n == 0) return 0;
-    /* cheby1 HP: DC 0, Nyquist gain 1 (odd) / 10^(−rp/20) (even) */
+    /* cheby1 HP：DC 0，Nyquist 增益 1（奇数阶）/ 10^(−rp/20)（偶数阶） */
     if (!check_cascade_gains(sections, n, 0.0f,
                              cheby1_edge_gain(order, ripple_db))) return 0;
     return n;
@@ -243,7 +243,7 @@ static uint8_t cheby1_bp_init(biquad_filter_t *sections,
                               wc1, wc2, fs, k,
                               poles, order, NULL, 0);
     if (n == 0) return 0;
-    /* cheby1 BP: DC and Nyquist gains 0 */
+    /* cheby1 BP：DC 与 Nyquist 增益均为 0 */
     if (!check_cascade_gains(sections, n, 0.0f, 0.0f)) return 0;
     return n;
 }
@@ -289,7 +289,7 @@ static uint8_t cheby1_bs_init(biquad_filter_t *sections,
                               wc1, wc2, fs, k,
                               poles, order, NULL, 0);
     if (n == 0) return 0;
-    /* cheby1 BS: DC and Nyquist gains 1 (odd) / 10^(−rp/20) (even) */
+    /* cheby1 BS：DC 与 Nyquist 增益均为 1（奇数阶）/ 10^(−rp/20)（偶数阶） */
     if (!check_cascade_gains(sections, n,
                              cheby1_edge_gain(order, ripple_db),
                              cheby1_edge_gain(order, ripple_db))) return 0;
@@ -333,7 +333,7 @@ static uint8_t cheby2_lp_init(biquad_filter_t *sections,
                               wc, 0.0f, fs, k,
                               poles, order, zeros, nz);
     if (n == 0) return 0;
-    /* cheby2 LP: DC gain 1, Nyquist 0 (odd) / 10^(−rs/20) (even) */
+    /* cheby2 LP：DC 增益 1，Nyquist 0（奇数阶）/ 10^(−rs/20)（偶数阶） */
     if (!check_cascade_gains(sections, n, 1.0f,
                              cheby2_edge_gain(order, ripple_db))) return 0;
     return n;
@@ -374,7 +374,7 @@ static uint8_t cheby2_hp_init(biquad_filter_t *sections,
                               wc, 0.0f, fs, k,
                               poles, order, zeros, nz);
     if (n == 0) return 0;
-    /* cheby2 HP: DC 0 (odd) / 10^(−rs/20) (even), Nyquist gain 1 */
+    /* cheby2 HP：DC 0（奇数阶）/ 10^(−rs/20)（偶数阶），Nyquist 增益 1 */
     if (!check_cascade_gains(sections, n,
                              cheby2_edge_gain(order, ripple_db), 1.0f)) return 0;
     return n;
@@ -420,7 +420,7 @@ static uint8_t cheby2_bp_init(biquad_filter_t *sections,
                               wc1, wc2, fs, k,
                               poles, order, zeros, nz);
     if (n == 0) return 0;
-    /* cheby2 BP: DC and Nyquist gains 0 (odd) / 10^(−rs/20) (even) */
+    /* cheby2 BP：DC 与 Nyquist 增益均为 0（奇数阶）/ 10^(−rs/20)（偶数阶） */
     if (!check_cascade_gains(sections, n,
                              cheby2_edge_gain(order, ripple_db),
                              cheby2_edge_gain(order, ripple_db))) return 0;
@@ -466,7 +466,7 @@ static uint8_t cheby2_bs_init(biquad_filter_t *sections,
                               wc1, wc2, fs, k,
                               poles, order, zeros, nz);
     if (n == 0) return 0;
-    /* cheby2 BS: DC and Nyquist gains 1 */
+    /* cheby2 BS：DC 与 Nyquist 增益均为 1 */
     if (!check_cascade_gains(sections, n, 1.0f, 1.0f)) return 0;
     return n;
 }
@@ -491,6 +491,7 @@ static uint8_t cheby2_bs_init(biquad_filter_t *sections,
         f->fs = fs; \
         f->ripple_db = ripple_db; \
         f->valid = 0; \
+        f->num_sections = 0; /* valid=0 时绝不能留下这个垃圾值 */ \
         uint8_t n = cheby1_lp_init(f->sections, ns, ord, fc, fs, ripple_db); \
         if (n == 0) return; \
         f->num_sections = n; \
@@ -509,6 +510,7 @@ FOR_EACH_CHEBY_LP_ORDER
         f->fs = fs; \
         f->ripple_db = ripple_db; \
         f->valid = 0; \
+        f->num_sections = 0; /* valid=0 时绝不能留下这个垃圾值 */ \
         uint8_t n = cheby1_hp_init(f->sections, ns, ord, fc, fs, ripple_db); \
         if (n == 0) return; \
         f->num_sections = n; \
@@ -527,6 +529,7 @@ FOR_EACH_CHEBY_LP_ORDER
         f->fs = fs; \
         f->ripple_db = ripple_db; \
         f->valid = 0; \
+        f->num_sections = 0; /* valid=0 时绝不能留下这个垃圾值 */ \
         uint8_t n = cheby1_bp_init(f->sections, ns, ord, fc1, fc2, fs, ripple_db); \
         if (n == 0) return; \
         f->num_sections = n; \
@@ -545,6 +548,7 @@ FOR_EACH_CHEBY_BP_ORDER
         f->fs = fs; \
         f->ripple_db = ripple_db; \
         f->valid = 0; \
+        f->num_sections = 0; /* valid=0 时绝不能留下这个垃圾值 */ \
         uint8_t n = cheby1_bs_init(f->sections, ns, ord, fc1, fc2, fs, ripple_db); \
         if (n == 0) return; \
         f->num_sections = n; \
@@ -563,6 +567,7 @@ FOR_EACH_CHEBY_BP_ORDER
         f->fs = fs; \
         f->ripple_db = ripple_db; \
         f->valid = 0; \
+        f->num_sections = 0; /* valid=0 时绝不能留下这个垃圾值 */ \
         uint8_t n = cheby2_lp_init(f->sections, ns, ord, fc, fs, ripple_db); \
         if (n == 0) return; \
         f->num_sections = n; \
@@ -581,6 +586,7 @@ FOR_EACH_CHEBY_LP_ORDER
         f->fs = fs; \
         f->ripple_db = ripple_db; \
         f->valid = 0; \
+        f->num_sections = 0; /* valid=0 时绝不能留下这个垃圾值 */ \
         uint8_t n = cheby2_hp_init(f->sections, ns, ord, fc, fs, ripple_db); \
         if (n == 0) return; \
         f->num_sections = n; \
@@ -599,6 +605,7 @@ FOR_EACH_CHEBY_LP_ORDER
         f->fs = fs; \
         f->ripple_db = ripple_db; \
         f->valid = 0; \
+        f->num_sections = 0; /* valid=0 时绝不能留下这个垃圾值 */ \
         uint8_t n = cheby2_bp_init(f->sections, ns, ord, fc1, fc2, fs, ripple_db); \
         if (n == 0) return; \
         f->num_sections = n; \
@@ -617,6 +624,7 @@ FOR_EACH_CHEBY_BP_ORDER
         f->fs = fs; \
         f->ripple_db = ripple_db; \
         f->valid = 0; \
+        f->num_sections = 0; /* valid=0 时绝不能留下这个垃圾值 */ \
         uint8_t n = cheby2_bs_init(f->sections, ns, ord, fc1, fc2, fs, ripple_db); \
         if (n == 0) return; \
         f->num_sections = n; \

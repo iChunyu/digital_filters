@@ -33,7 +33,10 @@ typedef struct {
  *
  * @param fd  目标数字截止频率（Hz），须满足 0 < fd < fs/2。
  * @param fs  采样频率（Hz）。
- * @return    等效模拟截止频率（Hz）。
+ * @return    等效模拟截止频率（Hz）；@p fd 或 @p fs 越界（含 NaN）时
+ *            返回 NaN——双线性映射在 Nyquist 以外无定义，NaN 会被
+ *            下游 `design_filter` 的有限性闸拦下变为直通，而不是
+ *            悄悄产出错误的滤波器。
  */
 float prewarp(float fd, float fs);
 
@@ -175,9 +178,9 @@ float bilinear_zpk_gain_scaled(float k, float s, uint8_t degree,
  * 每节分子增益为 1；系统总增益 @p k 只施加到第一节分子
  * （与 scipy zpk2sos 约定一致）。
  *
- * 直接在调用方的可变零极点数组上工作，不做内部拷贝（省 ~256 字节
- * 栈——zpk2sos 在 init 调用链深处被调用，MCU 上意义显著）；
- * 数组只读不改，归属跟踪用内部 used[] 位图。
+ * 直接在调用方的零极点数组上工作（只读，形参为 const），不做内部
+ * 拷贝（省 ~256 字节栈——zpk2sos 在 init 调用链深处被调用，MCU 上
+ * 意义显著）；归属跟踪用内部 used[] 位图。
  *
  * Fail-closed：零极点集不平衡、任一元素未配对（如合成共轭）、
  * 或各节根无法复现输入零极点多重集（跨对误认领）时返回 0。
@@ -191,7 +194,7 @@ float bilinear_zpk_gain_scaled(float k, float s, uint8_t degree,
  * @param[in]  k      系统总增益，施加到 sos[0] 分子。
  * @return            SOS 节数 = ceil(n/2)，失败返回 0。
  */
-uint8_t zpk2sos(complex_t *zeros, complex_t *poles, uint8_t n,
+uint8_t zpk2sos(const complex_t *zeros, const complex_t *poles, uint8_t n,
                 float (*sos)[6], float k);
 
 /**
@@ -201,10 +204,13 @@ uint8_t zpk2sos(complex_t *zeros, complex_t *poles, uint8_t n,
  * Butterworth 与 Chebyshev 族共用（管线相同、原型不同）：
  * Butterworth 传 ROM 极点表 + k=1、nz=0；Chebyshev 运行时计算
  * 原型，传自己的 k 与有限零点。管线只此一份，每个 fail-closed
- * 咽喉点（k 有限非零、节数上限、逐节 init、增益窗口）恰好
- * 存在一次。
+ * 咽喉点（输入边界、k 有限非零、节数上限、逐节 init、增益窗口）
+ * 恰好存在一次。
  *
- * Fail-closed：任一咽喉点失败返回 0（调用方部署直通）。
+ * Fail-closed：任一咽喉点失败返回 0（调用方部署直通）。输入边界
+ * 同样设闸——@p np 超出内部工作数组容量（ZPK2SOS_MAX_N = 16）或
+ * @p nz > @p np 时直接返回 0，不越界也不下溢。族 API 上限为原型
+ * 8 阶（变换后 16），直接调用本函数同样受此约束。
  *
  * @param[out] sections      输出 biquad 数组。
  * @param[in]  max_sections  sections 容量。
@@ -243,7 +249,9 @@ uint8_t design_filter(biquad_filter_t *sections, uint8_t max_sections,
  * @param[in] num_sections  已部署的节数。
  * @param[in] dc_exp        期望的级联 DC 增益（0、1 或纹波边缘）。
  * @param[in] ny_exp        期望的级联 Nyquist 增益（0、1 或纹波边缘）。
- * @return                  两个增益均在容差内返回 1。
+ * @return                  两个增益均在容差内返回 1；@p num_sections
+ *                          为 0 时返回 0（空级联两端乘积都是 1.0，
+ *                          否则带阻类的 (1, 1) 期望会被空洞通过）。
  */
 uint8_t check_cascade_gains(const biquad_filter_t *sections, uint8_t num_sections,
                             float dc_exp, float ny_exp);

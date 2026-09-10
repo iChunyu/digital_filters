@@ -2,6 +2,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 static int failures = 0;
 
@@ -173,7 +174,7 @@ int main(void)
 {
     float y;
 
-    /* ── Chebyshev I LP 2nd order, fc=2 Hz, fs=20 Hz, 1 dB ripple ────── */
+    /* ── Chebyshev I LP 二阶，fc=2 Hz，fs=20 Hz，1 dB 纹波 ────────────── */
 
     cheby1_lp_2nd_t c1;
     cheby1_lp_2nd_init(&c1, 2.0f, 20.0f, 1.0f);
@@ -184,7 +185,7 @@ int main(void)
     y = cheby1_lp_2nd_update(&c1, 1.0f);
     CHECK(CLOSE(y, 0.891251f, 1e-4f), "cheby1 LP 2nd DC gain ~ -1 dB (even order)");
 
-    /* ── Chebyshev I LP 3rd order (odd → 2 sections) ──────────────────── */
+    /* ── Chebyshev I LP 三阶（奇数阶 → 2 节）───────────────────────────── */
 
     cheby1_lp_3rd_t c1_3;
     cheby1_lp_3rd_init(&c1_3, 3.0f, 20.0f, 0.5f);
@@ -195,7 +196,7 @@ int main(void)
     y = cheby1_lp_3rd_update(&c1_3, 1.0f);
     CHECK(CLOSE(y, 1.0f, 1e-4f), "cheby1 LP 3rd DC gain ~ 1");
 
-    /* ── Chebyshev I HP 2nd order ────────────────────────────────────── */
+    /* ── Chebyshev I HP 二阶 ─────────────────────────────────────────── */
 
     cheby1_hp_2nd_t c1hp;
     cheby1_hp_2nd_init(&c1hp, 5.0f, 40.0f, 1.0f);
@@ -205,7 +206,7 @@ int main(void)
     y = cheby1_hp_2nd_update(&c1hp, 1.0f);
     CHECK(CLOSE(y, 0.0f, 1e-3f), "cheby1 HP 2nd blocks DC");
 
-    /* ── Chebyshev II LP 2nd order, 40 dB stopband ────────────────────── */
+    /* ── Chebyshev II LP 二阶，40 dB 阻带 ─────────────────────────────── */
 
     cheby2_lp_2nd_t c2;
     cheby2_lp_2nd_init(&c2, 2.0f, 20.0f, 40.0f);
@@ -216,7 +217,7 @@ int main(void)
     y = cheby2_lp_2nd_update(&c2, 1.0f);
     CHECK(CLOSE(y, 1.0f, 1e-4f), "cheby2 LP 2nd DC gain ~ 1");
 
-    /* ── Chebyshev II LP 3rd order (odd → 2 sections) ─────────────────── */
+    /* ── Chebyshev II LP 三阶（奇数阶 → 2 节）──────────────────────────── */
 
     cheby2_lp_3rd_t c2_3;
     cheby2_lp_3rd_init(&c2_3, 3.0f, 20.0f, 40.0f);
@@ -227,7 +228,7 @@ int main(void)
     y = cheby2_lp_3rd_update(&c2_3, 1.0f);
     CHECK(CLOSE(y, 1.0f, 1e-4f), "cheby2 LP 3rd DC gain ~ 1");
 
-    /* ── Chebyshev I BP 2nd order, fc1=2, fc2=5, fs=40 Hz ────────────── */
+    /* ── Chebyshev I BP 二阶，fc1=2，fc2=5，fs=40 Hz ──────────────────── */
 
     cheby1_bp_2nd_t c1bp;
     cheby1_bp_2nd_init(&c1bp, 2.0f, 5.0f, 40.0f, 1.0f);
@@ -238,7 +239,7 @@ int main(void)
     y = cheby1_bp_2nd_update(&c1bp, 1.0f);
     CHECK(CLOSE(y, 0.0f, 1e-3f), "cheby1 BP 2nd blocks DC");
 
-    /* Centre frequency gain ≈ 1.0 */
+    /* 中心频率增益 ≈ 1.0 */
     float f0 = sqrtf(2.0f * 5.0f);
     cheby1_bp_2nd_reset(&c1bp, 0.0f);
     float bp_max = 0.0f;
@@ -250,7 +251,7 @@ int main(void)
     }
     CHECK(CLOSE(bp_max, 1.0f, 0.15f), "cheby1 BP 2nd centre freq gain ~ 1");
 
-    /* ── Chebyshev I BS 2nd order ─────────────────────────────────────── */
+    /* ── Chebyshev I BS 二阶 ──────────────────────────────────────────── */
 
     cheby1_bs_2nd_t c1bs;
     cheby1_bs_2nd_init(&c1bs, 2.0f, 5.0f, 40.0f, 1.0f);
@@ -260,7 +261,7 @@ int main(void)
     y = cheby1_bs_2nd_update(&c1bs, 1.0f);
     CHECK(CLOSE(y, 0.891251f, 1e-4f), "cheby1 BS 2nd DC gain ~ -1 dB (even order)");
 
-    /* ── Chebyshev II HP 2nd order ────────────────────────────────────── */
+    /* ── Chebyshev II HP 二阶 ─────────────────────────────────────────── */
 
     cheby2_hp_2nd_t c2hp;
     cheby2_hp_2nd_init(&c2hp, 5.0f, 40.0f, 40.0f);
@@ -275,7 +276,7 @@ int main(void)
     }
     CHECK(CLOSE(nyq_gain, 1.0f, 1e-2f), "cheby2 HP 2nd Nyquist gain ~ 1");
 
-    /* ── Chebyshev II BP 3rd order (odd, tests zero-padding) ──────────── */
+    /* ── Chebyshev II BP 三阶（奇数阶，覆盖补零路径）───────────────────── */
 
     cheby2_bp_3rd_t c2bp3;
     cheby2_bp_3rd_init(&c2bp3, 3.0f, 8.0f, 40.0f, 40.0f);
@@ -286,7 +287,7 @@ int main(void)
     y = cheby2_bp_3rd_update(&c2bp3, 1.0f);
     CHECK(CLOSE(y, 0.0f, 1e-3f), "cheby2 BP 3rd blocks DC");
 
-    /* ── Chebyshev II BS 2nd order ────────────────────────────────────── */
+    /* ── Chebyshev II BS 二阶 ─────────────────────────────────────────── */
 
     cheby2_bs_2nd_t c2bs;
     cheby2_bs_2nd_init(&c2bs, 3.0f, 8.0f, 40.0f, 40.0f);
@@ -296,7 +297,7 @@ int main(void)
     y = cheby2_bs_2nd_update(&c2bs, 1.0f);
     CHECK(CLOSE(y, 1.0f, 1e-4f), "cheby2 BS 2nd DC gain ~ 1");
 
-    /* ── Invalid params → valid = 0 ────────────────────────────────────── */
+    /* ── 参数非法 → valid = 0 ─────────────────────────────────────────── */
 
     cheby1_lp_2nd_t ci1;
     ci1.valid = 0;
@@ -308,13 +309,24 @@ int main(void)
     cheby2_lp_2nd_init(&ci2, 2.0f, 20.0f, 0.0f);
     CHECK(ci2.valid == 0, "cheby2 ripple=0 invalid");
 
-    /* ── Invalid filter passthrough ────────────────────────────────────── */
+    /* ── 回归：init 被拒后 num_sections == 0，而不是垃圾值 ───────────────
+       X-macro 生成的 init 置 valid = 0 后就直接 return，从未写过
+       num_sections，于是不检查 valid 就读它的调用方会拿到结构体里
+       碰巧残留的值（memset 0xAB → 171）。先投毒，否则断言会空洞通过。 ── */
+
+    cheby1_lp_4th_t cns;
+    memset(&cns, 0xAB, sizeof cns);
+    cheby1_lp_4th_init(&cns, 100.0f, 48000.0f, 0.0f);   /* 参数校验拒绝 */
+    CHECK(cns.valid == 0, "num_sections: ripple=0 rejected");
+    CHECK(cns.num_sections == 0, "rejected init leaves num_sections == 0");
+
+    /* ── 无效滤波器的直通行为 ─────────────────────────────────────────── */
 
     y = cheby1_lp_2nd_update(&ci1, 0.5f);
     CHECK(y == 0.5f, "cheby1 invalid filter passthrough");
 
-    /* ── Regression: cheby2 BP 5th [50,120]@1000, rs=0.5 — mixed real /
-          complex zeros must pair by type (zpk2sos pairing bug) ─────────── */
+    /* ── 回归：cheby2 BP 五阶 [50,120]@1000，rs=0.5——实/复混合零点必须
+          按类型配对（zpk2sos 配对缺陷）────────────────────────────────── */
 
     cheby2_bp_5th_t c2bp_reg;
     cheby2_bp_5th_init(&c2bp_reg, 50.0f, 120.0f, 1000.0f, 0.5f);
@@ -335,8 +347,8 @@ int main(void)
     y = measure_nyquist_gain(c2bp_reg.sections, c2bp_reg.num_sections, 2000);
     CHECK(y < 1e-3f, "cheby2 BP 5th reg: Nyquist gain ~ 0");
 
-    /* ── Regression: cheby1 BS 5th [50,120]@1000, rp=3 — real pole must
-          pair with real pole (zpk2sos pairing bug) ────────────────────── */
+    /* ── 回归：cheby1 BS 五阶 [50,120]@1000，rp=3——实极点必须与实极点配对
+          （zpk2sos 配对缺陷）─────────────────────────────────────────── */
 
     cheby1_bs_5th_t c1bs_reg;
     cheby1_bs_5th_init(&c1bs_reg, 50.0f, 120.0f, 1000.0f, 3.0f);
@@ -352,13 +364,13 @@ int main(void)
     y = measure_nyquist_gain(c1bs_reg.sections, c1bs_reg.num_sections, 2000);
     CHECK(CLOSE(y, 1.0f, 0.1f), "cheby1 BS 5th reg: Nyquist gain ~ 1");
 
-    /* ── Analytic cascade gains (no transient effects) ─────────────────── */
+    /* ── 解析级联增益（不含瞬态影响）───────────────────────────────────── */
 
-    /* cascade_dc_gain / cascade_nyq_gain / max_gain_over are defined
-       below via the helpers at the bottom of this file. */
+    /* cascade_dc_gain / cascade_nyq_gain / max_gain_over 由本文件底部的
+       辅助函数给出。 */
 
-    /* ── Regression: wideband cheby2 configs that used to deploy silently
-          wrong filters (mispaired poles → DC 97.9, 350x @ 24.5 Hz) ─────── */
+    /* ── 回归：过去会静默部署错误滤波器的宽带 cheby2 配置
+          （配错极点 → DC 97.9、24.5 Hz 处 350 倍）────────────────────── */
 
     cheby2_bs_7th_t c2bs7;
     cheby2_bs_7th_init(&c2bs7, 20.0f, 480.0f, 1000.0f, 0.5f);
@@ -366,8 +378,8 @@ int main(void)
     if (c2bs7.valid) {
         y = cascade_dc_gain(c2bs7.sections, c2bs7.num_sections);
         CHECK(CLOSE(y, 1.0f, 0.1f), "cheby2 BS 7th [20,480] DC gain ~ 1 (was 97.9)");
-        /* 24.5 Hz sits in the stopband: legitimate gain is the rs=0.5
-           stopband floor ~0.94; the old defect amplified ~350x here. */
+        /* 24.5 Hz 位于阻带：合法增益是 rs=0.5 的阻带地板 ~0.94；
+           旧的缺陷在这里放大到约 350 倍。 */
         y = measure_gain_at(c2bs7.sections, c2bs7.num_sections,
                             24.5f, 1000.0f, 4000);
         CHECK(y < 2.0f, "cheby2 BS 7th [20,480] no 350x resonance (was 350x)");
@@ -381,7 +393,7 @@ int main(void)
         CHECK(fabsf(y) < 0.1f, "cheby2 BP 3rd [20,480] blocks DC (was 0.497)");
     }
 
-    /* ── Near-Nyquist LP rescue (gain-chain f32 overflow fixed) ────────── */
+    /* ── 近 Nyquist LP 的抢救（增益链 f32 溢出已修）────────────────────── */
 
     cheby1_lp_8th_t c1nn;
     c1nn.valid = 0;
@@ -392,7 +404,7 @@ int main(void)
         CHECK(CLOSE(y, 0.891251f, 0.05f), "cheby1 LP 8th near-Nyquist DC = 10^(-rp/20)");
     }
 
-    /* ── Degenerate ripple → fail closed (passthrough) ─────────────────── */
+    /* ── 退化纹波 → fail-closed（直通）────────────────────────────────── */
 
     cheby1_lp_2nd_t c1d;
     c1d.valid = 0;
@@ -403,7 +415,7 @@ int main(void)
     y = cheby1_lp_2nd_update(&c1d, 0.5f);
     CHECK(y == 0.5f, "degenerate cheby1 passthrough");
 
-    /* ── Sweep: cheby2 BP/BS matrix must deploy with sane responses ────── */
+    /* ── 扫掠：cheby2 BP/BS 全矩阵必须部署出响应正常的结果 ──────────────── */
 
     static const float sw_bands[3][2] = {{50.0f, 120.0f}, {20.0f, 480.0f},
                                          {10.0f, 499.0f}};
@@ -452,7 +464,7 @@ int main(void)
     FOR_EACH_CHEBY_BP_ORDER
     #undef X
 
-    /* ── Sweep: cheby1 LP matrix ───────────────────────────────────────── */
+    /* ── 扫掠：cheby1 LP 全阶矩阵 ──────────────────────────────────────── */
 
     static const float sw_lp_fc[2] = {100.0f, 480.0f};
     static const float sw_lp_rp[2] = {0.5f, 3.0f};
@@ -609,13 +621,12 @@ int main(void)
     FOR_EACH_CHEBY_LP_ORDER
     #undef X
 
-    /* ── Regression: high-Q BS pole cluster — conjugate pairing ───────────
-       claim_conjugate() used to take the FIRST unused pole inside the
-       tolerance box; in this design's pole cluster (~8e-4 inter-pair
-       spacing < 1e-3 box) it stole another pair's mate: sections 6 and 7
-       deployed as EXACT duplicates, a distinct pair was dropped, and the
-       deployed filter measured DC −1.5 dB with a +8.7 dB spur at 98 Hz
-       inside the passband — silently, valid=1. ────────────────────────── */
+    /* ── 回归：高 Q BS 极点簇——共轭配对 ─────────────────────────────────
+       claim_conjugate() 过去取容差盒内**第一个**未用极点；在本设计的
+       极点簇里（对内间距 ~8e-4 < 1e-3 的盒），它偷走了另一对的伴侣：
+       第 6、7 节部署成完全一样的重复节，一对不同的极点被丢掉，部署出
+       的滤波器实测 DC −1.5 dB、通带内 98 Hz 处有 +8.7 dB 尖峰——
+       而且全程静默，valid=1。 ─────────────────────────────────────── */
 
     cheby1_bs_8th_t c1bs_hiq;
     c1bs_hiq.valid = 0;
@@ -632,11 +643,11 @@ int main(void)
                     dup = 1;
         CHECK(!dup, "cheby1 BS 8th [100,200]: no duplicate sections");
 
-        /* Even-order cheby1: DC = 10^(−rp/20) = 0.8913 (was −1.5 dB off). */
+        /* 偶数阶 cheby1：DC = 10^(−rp/20) = 0.8913（过去差了 −1.5 dB）。 */
         y = cascade_dc_gain(c1bs_hiq.sections, c1bs_hiq.num_sections);
         CHECK(CLOSE(y, 0.891251f, 0.02f), "cheby1 BS 8th [100,200]: DC = 10^(-rp/20)");
 
-        /* Passband must stay within the 1 dB ripple bounds (was +8.7 dB). */
+        /* 通带必须留在 1 dB 纹波界内（过去是 +8.7 dB）。 */
         float hiq_max = 0.0f;
         for (float hf = 90.0f; hf <= 220.0f; hf += 10.0f) {
             float g = measure_gain_at(c1bs_hiq.sections, c1bs_hiq.num_sections,
@@ -646,7 +657,7 @@ int main(void)
         CHECK(hiq_max < 1.25f, "cheby1 BS 8th [100,200]: passband max gain sane");
     }
 
-    /* ── Report ───────────────────────────────────────────────────────── */
+    /* ── 汇总 ─────────────────────────────────────────────────────────── */
 
     if (failures) {
         fprintf(stderr, "%d test(s) FAILED.\n", failures);

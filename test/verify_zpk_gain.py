@@ -10,7 +10,14 @@ verify_zpk_gain.py — 验证 zpk 变换中增益 k 对 float32 精度的需求�
 import sys
 import math
 import cmath
-import numpy as np
+
+try:
+    import numpy as np
+except ImportError:
+    # ctest SKIP（与 compare_scipy.py 同款约定）：没有 numpy 这个脚本
+    # 跑不了，而裸的 ImportError 会被 ctest 判成 FAIL。
+    print("SKIP: numpy not installed")
+    sys.exit(77)
 
 # =====================================================================
 #  scipy 管线复现（独立实现，不依赖 scipy.signal）

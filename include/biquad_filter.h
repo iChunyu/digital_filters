@@ -118,26 +118,26 @@ uint8_t biquad_filter_init(biquad_filter_t *filter, const float num_z[3],
  */
 static inline float biquad_filter_update(biquad_filter_t *filter, float input)
 {
-    /* Snapshot current state before shifting (values become w[n-1], w[n-2]). */
+    /* 移入新样本前先快照当前状态（这两个值将成为 w[n-1]、w[n-2]）。 */
     const float w1 = filter->w[0];
     const float w2 = filter->w[1];
 
-    /* Cache coefficients — avoids reloading through pointer on each access. */
+    /* 缓存系数——避免每次访问都通过指针重新装载。 */
     const float a1 = filter->den_z[1];
     const float a2 = filter->den_z[2];
     const float b0 = filter->num_z[0];
     const float b1 = filter->num_z[1];
     const float b2 = filter->num_z[2];
 
-    /* Compute new state: w[n] = x[n] - a1·w[n-1] - a2·w[n-2] */
+    /* 计算新状态：w[n] = x[n] − a1·w[n-1] − a2·w[n-2] */
     const float w0 = input - a1 * w1 - a2 * w2;
 
-    /* Commit state to memory. */
+    /* 状态写回内存。 */
     filter->w[2] = w2;
     filter->w[1] = w1;
     filter->w[0] = w0;
 
-    /* Output: y[n] = b0·w[n] + b1·w[n-1] + b2·w[n-2] */
+    /* 输出：y[n] = b0·w[n] + b1·w[n-1] + b2·w[n-2] */
     return b0 * w0 + b1 * w1 + b2 * w2;
 }
 

@@ -19,9 +19,8 @@
 
 int main(int argc, char **argv)
 {
-    /* Output path via argv[1] so ctest can pin the CSV to the build dir
-       (the Python comparison scripts read from there, never from a stale
-       source-dir copy). */
+    /* 输出路径经 argv[1] 传入，让 ctest 能把 CSV 固定到 build 目录
+       （Python 对比脚本从那里读取，绝不会读到源码目录里的陈旧副本）。 */
     const char *path = (argc > 1) ? argv[1] : "test_cheby_data.csv";
     FILE *f = fopen(path, "w");
     if (!f) { perror(path); return 1; }
@@ -46,8 +45,8 @@ int main(int argc, char **argv)
     cheby2_bp_7th_init(&c2_bp, FC1_BP, FC2_BP, FS, CHEBY2_RIPPLE_DB);
     cheby2_bs_7th_init(&c2_bs, FC1_BP, FC2_BP, FS, CHEBY2_RIPPLE_DB);
 
-    /* A fully fail-closed (all-passthrough) build must NOT emit a
-       plausible CSV that then validates stale comparisons. */
+    /* 整条链 fail-closed（全部直通）的构建绝不能吐出一份看似正常的
+       CSV，否则会去校验陈旧的对比结果。 */
     if (!(c1_lp.valid && c1_hp.valid && c1_bp.valid && c1_bs.valid
           && c2_lp.valid && c2_hp.valid && c2_bp.valid && c2_bs.valid)) {
         fprintf(stderr, "cheby 7th design failed (valid=0) — refusing to emit CSV\n");

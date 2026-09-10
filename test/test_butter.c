@@ -2,6 +2,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 static int failures = 0;
 
@@ -148,7 +149,7 @@ int main(void)
 {
     float y;
 
-    /* ── LP 2nd order, fc=2 Hz, fs=20 Hz ──────────────────────────────── */
+    /* ── LP 二阶，fc=2 Hz，fs=20 Hz ───────────────────────────────────── */
 
     butter_lp_2nd_t blp;
     butter_lp_2nd_init(&blp, 2.0f, 20.0f);
@@ -157,28 +158,28 @@ int main(void)
     CHECK(blp.order == 2, "LP 2nd order");
     CHECK(blp.num_sections == 1, "LP 2nd → 1 section");
 
-    /* DC gain ≈ 1.0 */
+    /* DC 增益 ≈ 1.0 */
     butter_lp_2nd_reset(&blp, 1.0f);
     y = butter_lp_2nd_update(&blp, 1.0f);
     CHECK(CLOSE(y, 1.0f, 1e-4f), "LP 2nd DC gain ~ 1");
 
-    /* Attenuation at Nyquist (10 Hz) */
+    /* Nyquist（10 Hz）处的衰减 */
     float gn = measure_nyquist_gain(blp.sections, blp.num_sections, blp.valid, 400);
     CHECK(gn < 0.15f, "LP 2nd Nyquist attenuation");
 
-    /* ── HP 2nd order, fc=5 Hz, fs=40 Hz ──────────────────────────────── */
+    /* ── HP 二阶，fc=5 Hz，fs=40 Hz ───────────────────────────────────── */
 
     butter_hp_2nd_t bhp;
     butter_hp_2nd_init(&bhp, 5.0f, 40.0f);
     CHECK(bhp.valid == 1, "HP 2nd init valid");
     CHECK(bhp.num_sections == 1, "HP 2nd → 1 section");
 
-    /* DC gain ≈ 0 */
+    /* DC 增益 ≈ 0 */
     butter_hp_2nd_reset(&bhp, 1.0f);
     y = butter_hp_2nd_update(&bhp, 1.0f);
     CHECK(CLOSE(y, 0.0f, 1e-3f), "HP 2nd blocks DC");
 
-    /* Nyquist gain ≈ 1.0 */
+    /* Nyquist 增益 ≈ 1.0 */
     butter_hp_2nd_reset(&bhp, 0.0f);
     float nyq_gain = 0.0f;
     for (int n = 0; n < 200; n++) {
@@ -188,22 +189,38 @@ int main(void)
     }
     CHECK(CLOSE(nyq_gain, 1.0f, 1e-3f), "HP 2nd Nyquist gain ~ 1");
 
-    /* ── Invalid parameters → valid = 0, passthrough ──────────────────── */
+    /* ── 参数非法 → valid = 0，直通 ───────────────────────────────────── */
 
     butter_lp_2nd_t binv;
 
-    /* fc=0 invalid */
-    binv.valid = 0;  /* suppress uninit warning in macro */
+    /* fc=0 非法 */
+    binv.valid = 0;  /* 压掉宏里未初始化的告警 */
     butter_lp_2nd_init(&binv, 0.0f, 20.0f);
     CHECK(binv.valid == 0, "LP 2nd fc=0 invalid");
     y = butter_lp_2nd_update(&binv, 0.5f);
     CHECK(y == 0.5f, "invalid filter passthrough");
 
-    /* fc=fs/2 invalid */
+    /* fc=fs/2 非法 */
     butter_lp_2nd_init(&binv, 10.0f, 20.0f);
     CHECK(binv.valid == 0, "LP 2nd fc=fs/2 invalid");
 
-    /* ── LP 4th-order → 2 sections ────────────────────────────────────── */
+    /* ── 回归：init 被拒后 num_sections == 0，而不是垃圾值 ───────────────
+       X-macro 生成的 init 置 valid = 0 后就直接 return，从未写过
+       num_sections，于是不检查 valid 就读它的调用方会拿到结构体里
+       碰巧残留的值（memset 0xAB → 171）。先投毒，否则断言会空洞通过。 ── */
+
+    butter_lp_4th_t bns;
+    memset(&bns, 0xAB, sizeof bns);
+    butter_lp_4th_init(&bns, 0.0f, 48000.0f);        /* 参数校验拒绝 */
+    CHECK(bns.valid == 0, "num_sections: fc=0 rejected");
+    CHECK(bns.num_sections == 0, "rejected init leaves num_sections == 0");
+
+    memset(&bns, 0xAB, sizeof bns);
+    butter_lp_4th_init(&bns, 1.0f, 48000.0f);        /* 极点裕量拒绝 */
+    CHECK(bns.valid == 0, "num_sections: fc=1Hz@48k rejected");
+    CHECK(bns.num_sections == 0, "deep rejection also clears num_sections");
+
+    /* ── LP 四阶 → 2 节 ───────────────────────────────────────────────── */
 
     butter_lp_4th_t b4;
     butter_lp_4th_init(&b4, 3.0f, 20.0f);
@@ -214,7 +231,7 @@ int main(void)
     y = butter_lp_4th_update(&b4, 1.0f);
     CHECK(CLOSE(y, 1.0f, 1e-4f), "LP 4th DC gain ~ 1");
 
-    /* ── LP 1st-order ─────────────────────────────────────────────────── */
+    /* ── LP 一阶 ──────────────────────────────────────────────────────── */
 
     butter_lp_1st_t b1;
     butter_lp_1st_init(&b1, 2.0f, 20.0f);
@@ -225,7 +242,7 @@ int main(void)
     y = butter_lp_1st_update(&b1, 1.0f);
     CHECK(CLOSE(y, 1.0f, 1e-4f), "LP 1st DC gain ~ 1");
 
-    /* ── HP 3rd-order → 2 sections ────────────────────────────────────── */
+    /* ── HP 三阶 → 2 节 ───────────────────────────────────────────────── */
 
     butter_hp_3rd_t bhp3;
     butter_hp_3rd_init(&bhp3, 5.0f, 40.0f);
@@ -236,51 +253,51 @@ int main(void)
     y = butter_hp_3rd_update(&bhp3, 1.0f);
     CHECK(CLOSE(y, 0.0f, 1e-3f), "HP 3rd blocks DC");
 
-    /* ── BP 2nd order, fc1=2 Hz, fc2=5 Hz, fs=40 Hz ──────────────────── */
+    /* ── BP 二阶，fc1=2 Hz，fc2=5 Hz，fs=40 Hz ────────────────────────── */
 
     butter_bp_2nd_t bbp;
     butter_bp_2nd_init(&bbp, 2.0f, 5.0f, 40.0f);
     CHECK(bbp.valid == 1, "BP 2nd init valid");
     CHECK(bbp.num_sections == 2, "BP 2nd → 2 sections");
 
-    /* DC gain ≈ 0 */
+    /* DC 增益 ≈ 0 */
     butter_bp_2nd_reset(&bbp, 1.0f);
     y = butter_bp_2nd_update(&bbp, 1.0f);
     CHECK(CLOSE(y, 0.0f, 1e-3f), "BP 2nd blocks DC");
 
-    /* Centre frequency gain ≈ 1.0 */
+    /* 中心频率增益 ≈ 1.0 */
     float f0 = sqrtf(2.0f * 5.0f);
     gn = measure_gain(bbp.sections, bbp.num_sections, bbp.valid, f0, 40.0f, 800);
     CHECK(CLOSE(gn, 1.0f, 0.1f), "BP 2nd centre freq gain ~ 1");
 
-    /* Out-of-band attenuation at Nyquist */
+    /* Nyquist 处的带外衰减 */
     gn = measure_nyquist_gain(bbp.sections, bbp.num_sections, bbp.valid, 800);
     CHECK(gn < 0.15f, "BP 2nd Nyquist attenuation");
 
-    /* ── BP 1st-order → 1 section ─────────────────────────────────────── */
+    /* ── BP 一阶 → 1 节 ───────────────────────────────────────────────── */
 
     butter_bp_1st_t bbp1;
     butter_bp_1st_init(&bbp1, 3.0f, 6.0f, 40.0f);
     CHECK(bbp1.valid == 1, "BP 1st init valid");
     CHECK(bbp1.num_sections == 1, "BP 1st → 1 section");
 
-    /* ── BS 2nd order, fc1=2 Hz, fc2=5 Hz, fs=40 Hz ──────────────────── */
+    /* ── BS 二阶，fc1=2 Hz，fc2=5 Hz，fs=40 Hz ────────────────────────── */
 
     butter_bs_2nd_t bbs;
     butter_bs_2nd_init(&bbs, 2.0f, 5.0f, 40.0f);
     CHECK(bbs.valid == 1, "BS 2nd init valid");
     CHECK(bbs.num_sections == 2, "BS 2nd → 2 sections");
 
-    /* DC gain ≈ 1 */
+    /* DC 增益 ≈ 1 */
     butter_bs_2nd_reset(&bbs, 1.0f);
     y = butter_bs_2nd_update(&bbs, 1.0f);
     CHECK(CLOSE(y, 1.0f, 1e-4f), "BS 2nd DC gain ~ 1");
 
-    /* Centre frequency notch */
+    /* 中心频率处的陷波 */
     gn = measure_gain(bbs.sections, bbs.num_sections, bbs.valid, f0, 40.0f, 800);
     CHECK(gn < 0.15f, "BS 2nd notch at centre freq");
 
-    /* Nyquist gain ≈ 1.0 */
+    /* Nyquist 增益 ≈ 1.0 */
     butter_bs_2nd_reset(&bbs, 0.0f);
     nyq_gain = 0.0f;
     for (int n = 0; n < 200; n++) {
@@ -290,7 +307,7 @@ int main(void)
     }
     CHECK(CLOSE(nyq_gain, 1.0f, 1e-3f), "BS 2nd Nyquist gain ~ 1");
 
-    /* ── BP/BS invalid: fc1 >= fc2 ────────────────────────────────────── */
+    /* ── BP/BS 非法：fc1 >= fc2 ───────────────────────────────────────── */
 
     butter_bp_2nd_init(&bbp, 5.0f, 2.0f, 40.0f);
     CHECK(bbp.valid == 0, "BP fc1>=fc2 invalid");
@@ -299,7 +316,7 @@ int main(void)
     butter_bs_2nd_init(&bbs_inv, 5.0f, 5.0f, 40.0f);
     CHECK(bbs_inv.valid == 0, "BS fc1==fc2 invalid");
 
-    /* ── BP/BS invalid: fc2 >= fs/2 ───────────────────────────────────── */
+    /* ── BP/BS 非法：fc2 >= fs/2 ──────────────────────────────────────── */
 
     butter_bp_2nd_init(&bbp, 2.0f, 20.0f, 40.0f);
     CHECK(bbp.valid == 0, "BP fc2=fs/2 invalid");
@@ -307,7 +324,7 @@ int main(void)
     butter_bs_2nd_init(&bbs, 2.0f, 25.0f, 40.0f);
     CHECK(bbs.valid == 0, "BS fc2>=fs/2 invalid");
 
-    /* ── LP 8th-order → 4 sections ────────────────────────────────────── */
+    /* ── LP 八阶 → 4 节 ───────────────────────────────────────────────── */
 
     butter_lp_8th_t b8;
     butter_lp_8th_init(&b8, 3.0f, 20.0f);
@@ -318,10 +335,9 @@ int main(void)
     y = butter_lp_8th_update(&b8, 1.0f);
     CHECK(CLOSE(y, 1.0f, 1e-4f), "LP 8th DC gain ~ 1");
 
-    /* ── Regression: ultra-wideband BP8 (gain chain f32 overflow) ────────
-       Used to overflow (k = xi^8 > FLT_MAX) and fail closed; with the
-       folded gain chain the design must now succeed and match the
-       Butterworth response. ─────────────────────────────────────────────── */
+    /* ── 回归：超宽带 BP8（增益链 f32 溢出）──────────────────────────────
+       过去会溢出（k = xi^8 > FLT_MAX）并 fail-closed；增益链折叠之后
+       该设计必须成功，且与 Butterworth 响应吻合。 ─────────────────────── */
 
     butter_bp_8th_t bwb;
     bwb.valid = 0;
@@ -329,18 +345,18 @@ int main(void)
     CHECK(bwb.valid == 1, "BP 8th ultra-wideband now valid");
     CHECK(bwb.num_sections == 8, "BP 8th ultra-wideband → 8 sections");
 
-    /* DC and Nyquist must be blocked */
+    /* DC 与 Nyquist 都必须被阻断 */
     butter_bp_8th_reset(&bwb, 1.0f);
     y = butter_bp_8th_update(&bwb, 1.0f);
     CHECK(CLOSE(y, 0.0f, 1e-3f), "BP 8th ultra-wideband blocks DC");
 
-    /* Passband gain ≈ 1 and band-edge gain ≈ 1/√2 */
+    /* 通带增益 ≈ 1，带边增益 ≈ 1/√2 */
     gn = measure_gain(bwb.sections, bwb.num_sections, bwb.valid, 1000.0f, 8000.0f, 8000);
     CHECK(CLOSE(gn, 1.0f, 0.05f), "BP 8th ultra-wideband passband gain ~ 1");
     gn = measure_gain(bwb.sections, bwb.num_sections, bwb.valid, 3990.0f, 8000.0f, 8000);
     CHECK(CLOSE(gn, 0.707f, 0.05f), "BP 8th ultra-wideband edge gain ~ 0.707");
 
-    /* ── Regression: near-Nyquist LP8 (previously NaN at HEAD) ──────────── */
+    /* ── 回归：近 Nyquist LP8（此前会产生 NaN）──────────────────────────── */
 
     butter_lp_8th_t bnn;
     bnn.valid = 0;
@@ -354,12 +370,10 @@ int main(void)
     gn = measure_gain(bnn.sections, bnn.num_sections, bnn.valid, 470.0f, 1000.0f, 8000);
     CHECK(CLOSE(gn, 0.707f, 0.05f), "LP 8th near-Nyquist edge gain ~ 0.707");
 
-    /* ── Regression: wide-band BP with near-real pole pairs ────────────────
-       The f32 Jury sum 1 + a1 + a2 used to cancel to EXACTLY 0.0f for
-       orders 4/5/8 (poles ~2.5e-4 from z=1) and reject the design while
-       orders 1-3 passed; a too-loose real/complex classification then
-       cross-paired the near-real pairs into sections with a pole exactly
-       at z = 1.  Both fixed. ─────────────────────────────────────────────── */
+    /* ── 回归：含近实极点对的宽带 BP ──────────────────────────────────────
+       4/5/8 阶（极点距 z=1 约 2.5e-4）的 f32 Jury 和 1 + a1 + a2 过去会
+       恰好消成 0.0f，把设计误拒，而 1~3 阶却能通过；随后过松的实/复分类
+       又把这些近实对跨对配成极点恰在 z = 1 的节。两者均已修复。 ────────── */
 
     butter_bp_4th_t bwb4; bwb4.valid = 0;
     butter_bp_4th_init(&bwb4, 5.0f, 20000.0f, 48000.0f);
@@ -373,8 +387,8 @@ int main(void)
     butter_bp_8th_init(&bwb8, 5.0f, 20000.0f, 48000.0f);
     CHECK(bwb8.valid == 1, "BP 8th (5,20000,48k) valid (Jury/pairing)");
 
-    /* ── Regression: narrow-but-representable LP accepted, ultra-narrow
-          (pole within the 5e-5 margin of z=1) rejected fail-closed ─────── */
+    /* ── 回归：可表示的窄带 LP 接受，超窄带（极点落在距 z=1 的 5e-5 裕量
+          之内）fail-closed 拒绝 ──────────────────────────────────────── */
 
     butter_lp_2nd_t blp6; blp6.valid = 0;
     butter_lp_2nd_init(&blp6, 6.0f, 48000.0f);
@@ -386,9 +400,8 @@ int main(void)
     y = butter_lp_2nd_update(&blp1, 0.5f);
     CHECK(y == 0.5f, "LP 2nd fc=1Hz passthrough");
 
-    /* ── Regression: near-Nyquist band edges — inside the pole margin the
-          design deploys; past it the design is rejected deterministically
-          (no NaN garbage, no acceptance cliff between adjacent specs) ──── */
+    /* ── 回归：近 Nyquist 带边——在极点裕量之内设计正常部署；超出则确定性
+          地拒绝（没有 NaN 垃圾，相邻规格之间也没有接受悬崖）─────────── */
 
     butter_bs_1st_t bbs_ok; bbs_ok.valid = 0;
     butter_bs_1st_init(&bbs_ok, 100.0f, 23990.0f, 48000.0f);
@@ -398,7 +411,66 @@ int main(void)
     butter_bs_1st_init(&bbs_x, 100.0f, 23999.8f, 48000.0f);
     CHECK(bbs_x.valid == 0, "BS 1st (100,23999.8,48k) rejected (pole r=0.99997)");
 
-    /* ── Struct sizes ─────────────────────────────────────────────────── */
+    /* ── 回归：design_filter 输入边界闸（导出的管线）─────────────────────
+       design_filter 是对外导出的，其栈上工作数组只容纳
+       ZPK2SOS_MAX_N = 16 个元素，而 `degree = np - nz` 是 uint8_t。
+       np > 16 过去会向 128 字节的栈数组外 memcpy 160 字节
+       （ASan：filter_utils.c 栈缓冲区溢出），nz > np 则让相对阶数下溢。
+       两者现在都在管线入口被拒——这是 fail-closed 清单里唯一漏掉的
+       咽喉点。 ─────────────────────────────────────────────────────── */
+
+    {
+        biquad_filter_t gsec[8];
+        complex_t gp[20], gz[20];
+        for (int i = 0; i < 20; i++) {
+            gp[i].re = -1.0f - 0.3f * (float)i;
+            gp[i].im = (i % 2) ? 0.4f : -0.4f;
+            gz[i].re = -1.0f;
+            gz[i].im = 0.0f;
+        }
+
+        CHECK(design_filter(gsec, 8, FILTER_LOWPASS, 628.3f, 0.0f, 48000.0f,
+                            1.0f, gp, 20, gz, 0) == 0,
+              "design_filter rejects np > ZPK2SOS_MAX_N (no stack smash)");
+        CHECK(design_filter(gsec, 8, FILTER_LOWPASS, 628.3f, 0.0f, 48000.0f,
+                            1.0f, gp, 0, NULL, 0) == 0,
+              "design_filter rejects np == 0");
+        CHECK(design_filter(gsec, 8, FILTER_LOWPASS, 628.3f, 0.0f, 48000.0f,
+                            1.0f, gp, 4, gz, 6) == 0,
+              "design_filter rejects nz > np (degree underflow)");
+
+        /* 正向对照——该闸不得误拒包络内的原型。同样的调用形式、np = 2，
+           必须仍能部署出 1 节。 */
+        complex_t lp2[2] = {{-0.70710678f, -0.70710678f},
+                            {-0.70710678f,  0.70710678f}};
+        uint8_t gns = design_filter(gsec, 2, FILTER_LOWPASS,
+                                    2.0f * (float)M_PI * prewarp(100.0f, 1000.0f),
+                                    0.0f, 1000.0f, 1.0f, lp2, 2, NULL, 0);
+        CHECK(gns == 1, "design_filter accepts an in-envelope prototype");
+
+        /* prewarp() 必须报错，而不是递回一个看着还挺像样的数。
+           它过去在 fd <= 0 / fd >= fs/2 时原样返回 fd（"let caller
+           clamp"——其实没人 clamp），直接调用者会把它一路喂进设计里。
+           现在 NaN 顺 wc 传播，被上面的有限性闸拦下。 */
+        CHECK(isnan(prewarp(-100.0f, 48000.0f)), "prewarp rejects fd < 0");
+        CHECK(isnan(prewarp(0.0f, 48000.0f)), "prewarp rejects fd == 0");
+        CHECK(isnan(prewarp(24000.0f, 48000.0f)), "prewarp rejects fd == fs/2");
+        CHECK(isnan(prewarp(30000.0f, 48000.0f)), "prewarp rejects fd > fs/2");
+        CHECK(isnan(prewarp(NAN, 48000.0f)), "prewarp rejects NaN fd");
+        CHECK(isnan(prewarp(100.0f, NAN)), "prewarp rejects NaN fs");
+        CHECK(isfinite(prewarp(100.0f, 1000.0f)) &&
+              CLOSE(prewarp(100.0f, 1000.0f), 103.42515f, 1e-3f),
+              "prewarp in-range value unchanged");
+
+        /* 空级联两端乘积都是 1.0，带阻式的 (1, 1) 期望过去被空洞通过——
+           0 节不是设计，必须拒绝。 */
+        biquad_filter_t empty_sec;
+        biquad_filter_set_empty(&empty_sec);
+        CHECK(check_cascade_gains(&empty_sec, 0, 1.0f, 1.0f) == 0,
+              "check_cascade_gains rejects an empty cascade");
+    }
+
+    /* ── 结构体尺寸 ───────────────────────────────────────────────────── */
 
     CHECK(sizeof(butter_lp_3rd_t) > sizeof(butter_lp_1st_t),
           "LP 3rd bigger than LP 1st");
@@ -490,7 +562,7 @@ int main(void)
     FOR_EACH_BUTTER_BP_ORDER
     #undef X
 
-    /* ── Report ───────────────────────────────────────────────────────── */
+    /* ── 汇总 ─────────────────────────────────────────────────────────── */
 
     if (failures) {
         fprintf(stderr, "%d test(s) FAILED.\n", failures);

@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Compare Butterworth filter C outputs with scipy.
+"""把 Butterworth 滤波器的 C 输出与 scipy 对比。
 
-Usage:
-  1. Build: cmake -B build && cmake --build build
-  2. Run: python3 test/test_butter_use_py.py build/test
-     (pass the directory holding the C generator binary and CSV;
-      defaults to this script's directory)
+用法：
+  1. 构建：cmake -B build && cmake --build build
+  2. 运行：python3 test/test_butter_use_py.py build/test
+     （传入存放 C 生成器可执行文件与 CSV 的目录；
+       默认为本脚本所在目录）
 """
 
 import os
@@ -36,7 +36,7 @@ BIN_FILE = os.path.join(DATA_DIR, "test_butter_with_py")
 
 
 def ensure_csv():
-    """Generate CSV via C binary if it doesn't exist yet."""
+    """CSV 尚不存在时，调用 C 可执行文件生成。"""
     if os.path.isfile(CSV_FILE):
         return
     if not os.path.isfile(BIN_FILE):
@@ -76,7 +76,7 @@ def main():
         ax1.legend(loc="best")
         ax1.grid(True, alpha=0.3)
 
-        # Inset: last 100 points on amplitude
+        # 局部放大图：最后 100 个点的幅值
         n_zoom = min(100, len(t))
         ax1_ins = ax1.inset_axes([0.55, 0.55, 0.40, 0.40])
         ax1_ins.plot(t[-n_zoom:], x[-n_zoom:], color="gray", alpha=0.5)
@@ -96,7 +96,7 @@ def main():
         ax2.legend(loc="best")
         ax2.grid(True, alpha=0.3)
 
-        # Inset: last 100 error points
+        # 局部放大图：最后 100 个点的误差
         ax2_ins = ax2.inset_axes([0.55, 0.55, 0.40, 0.40])
         ax2_ins.plot(t[-n_zoom:], err_dyn[-n_zoom:], linestyle="--")
         ax2_ins.plot(t[-n_zoom:], err_sta[-n_zoom:], linestyle=":")

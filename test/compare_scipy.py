@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""Compare C filter CSV output against scipy reference — skip transients.
+"""把 C 滤波器输出的 CSV 与 scipy 参考作对比——跳过瞬态段。
 
-Usage: compare_scipy.py [csv_dir]
+用法：compare_scipy.py [csv_dir]
 
-csv_dir defaults to this script's directory; ctest passes the build dir
-where the C generators wrote their CSVs, so a stale source-dir copy can
-never shadow a fresh run.  Exits with code 77 (ctest SKIP) when numpy or
-scipy is not installed.
+csv_dir 默认为本脚本所在目录；ctest 传入的是 C 生成器写出 CSV 的
+build 目录，这样源码目录里的陈旧副本永远不会遮蔽新跑出来的结果。
+numpy 或 scipy 未安装时以退出码 77 退出（ctest SKIP）。
 """
 import os
 import sys
@@ -24,7 +23,7 @@ FS = 400.0
 
 def check_correctness(label, data, col, sos, x):
     scipy_out = signal.sosfilt(sos, x)
-    # Compare last 10% of samples for steady-state accuracy
+    # 只比最后 10% 的样本，考察稳态精度
     ss_start = max(len(x) * 9 // 10, len(x) - 50)
     err = data[col][ss_start:] - scipy_out[ss_start:]
     maxe = np.max(np.abs(err))

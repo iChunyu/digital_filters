@@ -83,7 +83,7 @@ static uint8_t butter_lp_init(biquad_filter_t *sections,
                               wc, 0.0f, fs, 1.0f,
                               butter_proto[order - 1], order, NULL, 0);
     if (n == 0) return 0;
-    /* LP: DC gain 1, Nyquist gain 0 */
+    /* LP：DC 增益 1，Nyquist 增益 0 */
     if (!check_cascade_gains(sections, n, 1.0f, 0.0f)) return 0;
     return n;
 }
@@ -113,7 +113,7 @@ static uint8_t butter_hp_init(biquad_filter_t *sections,
                               wc, 0.0f, fs, 1.0f,
                               butter_proto[order - 1], order, NULL, 0);
     if (n == 0) return 0;
-    /* HP: DC gain 0, Nyquist gain 1 */
+    /* HP：DC 增益 0，Nyquist 增益 1 */
     if (!check_cascade_gains(sections, n, 0.0f, 1.0f)) return 0;
     return n;
 }
@@ -150,7 +150,7 @@ static uint8_t butter_bp_init(biquad_filter_t *sections,
                               wc1, wc2, fs, 1.0f,
                               butter_proto[order - 1], order, NULL, 0);
     if (n == 0) return 0;
-    /* BP: DC and Nyquist gains 0 */
+    /* BP：DC 与 Nyquist 增益均为 0 */
     if (!check_cascade_gains(sections, n, 0.0f, 0.0f)) return 0;
     return n;
 }
@@ -187,7 +187,7 @@ static uint8_t butter_bs_init(biquad_filter_t *sections,
                               wc1, wc2, fs, 1.0f,
                               butter_proto[order - 1], order, NULL, 0);
     if (n == 0) return 0;
-    /* BS: DC and Nyquist gains 1 */
+    /* BS：DC 与 Nyquist 增益均为 1 */
     if (!check_cascade_gains(sections, n, 1.0f, 1.0f)) return 0;
     return n;
 }
@@ -216,6 +216,7 @@ static uint8_t butter_bs_init(biquad_filter_t *sections,
         f->fc2 = 0.0f; \
         f->fs = fs; \
         f->valid = 0; \
+        f->num_sections = 0; /* valid=0 时绝不能留下这个垃圾值 */ \
         uint8_t n = butter_lp_init(f->sections, ns, ord, fc, fs); \
         if (n == 0) return; \
         f->num_sections = n; \
@@ -233,6 +234,7 @@ FOR_EACH_BUTTER_LP_ORDER
         f->fc2 = 0.0f; \
         f->fs = fs; \
         f->valid = 0; \
+        f->num_sections = 0; /* valid=0 时绝不能留下这个垃圾值 */ \
         uint8_t n = butter_hp_init(f->sections, ns, ord, fc, fs); \
         if (n == 0) return; \
         f->num_sections = n; \
@@ -250,6 +252,7 @@ FOR_EACH_BUTTER_LP_ORDER
         f->fc2 = fc2; \
         f->fs = fs; \
         f->valid = 0; \
+        f->num_sections = 0; /* valid=0 时绝不能留下这个垃圾值 */ \
         uint8_t n = butter_bp_init(f->sections, ns, ord, fc1, fc2, fs); \
         if (n == 0) return; \
         f->num_sections = n; \
@@ -267,6 +270,7 @@ FOR_EACH_BUTTER_BP_ORDER
         f->fc2 = fc2; \
         f->fs = fs; \
         f->valid = 0; \
+        f->num_sections = 0; /* valid=0 时绝不能留下这个垃圾值 */ \
         uint8_t n = butter_bs_init(f->sections, ns, ord, fc1, fc2, fs); \
         if (n == 0) return; \
         f->num_sections = n; \
