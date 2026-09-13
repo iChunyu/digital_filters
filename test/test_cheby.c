@@ -33,22 +33,22 @@ static void section_zeros_stats(biquad_filter_t *secs, int ns,
 {
     *n_plus1 = *n_minus1 = *n_unit = *n_other = 0;
     for (int i = 0; i < ns; i++) {
-        double b0 = secs[i].num_z[0];
-        double b1 = secs[i].num_z[1];
-        double b2 = secs[i].num_z[2];
-        double s = -b1 / b0;
-        double c = b2 / b0;
-        double disc = s * s - 4.0 * c;
-        if (disc >= 0.0) {
-            double r = sqrt(disc);
-            double zeros[2] = {(s + r) / 2.0, (s - r) / 2.0};
+        float b0 = secs[i].num_z[0];
+        float b1 = secs[i].num_z[1];
+        float b2 = secs[i].num_z[2];
+        float s = -b1 / b0;
+        float c = b2 / b0;
+        float disc = s * s - 4.0f * c;
+        if (disc >= 0.0f) {
+            float r = sqrtf(disc);
+            float zeros[2] = {(s + r) / 2.0f, (s - r) / 2.0f};
             for (int j = 0; j < 2; j++) {
-                if (fabs(zeros[j] - 1.0) < 1e-3) (*n_plus1)++;
-                else if (fabs(zeros[j] + 1.0) < 1e-3) (*n_minus1)++;
+                if (fabsf(zeros[j] - 1.0f) < 1e-3f) (*n_plus1)++;
+                else if (fabsf(zeros[j] + 1.0f) < 1e-3f) (*n_minus1)++;
                 else (*n_other)++;
             }
         } else {
-            if (fabs(c - 1.0) < 1e-3) (*n_unit)++;
+            if (fabsf(c - 1.0f) < 1e-3f) (*n_unit)++;
             else (*n_other)++;
         }
     }

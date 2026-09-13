@@ -29,6 +29,8 @@ cd build && ctest --output-on-failure
 + zeros 128 B + sos 192 B ≈ 448 B，加上调用侧原型数组 ~128 B；该数值在 x86-64 -O2 下
 实测成立，-O0 下约 1.1 KB）。ARM Cortex-M4 `-Os -fstack-usage` 实测最坏一条链为
 `cheby2_lp_init` 208 B + `design_filter` 544 B + `zpk2sos` 192 B ≈ 944 B。
+`notch_init` 走的是直写 biquad 的短路径（无零极点工作数组），x86-64 -O2 实测
+仅 **112 B**，是全场最小的一条 init 链。
 运行时 `_update` 全 inline（biquad → 级联 → 逐阶函数三层全部
 头文件内联），无额外栈开销。建议 MCU 主栈 ≥ 2 KB（两平台实测峰值均有 2× 以上余量）。
 
@@ -59,6 +61,10 @@ update/reset 为头文件 inline，不占库 text。
 
 支持四种滤波器类型：`FILTER_LOWPASS`, `FILTER_HIGHPASS`, `FILTER_BANDPASS`, `FILTER_BANDSTOP`。
 最大原型阶数 **8 阶**（BP/BS 有效 16 阶）。
+
+**Notch（陷波）**是独立的第四族，**不走这条流水线**：它是二阶的，只有一对
+一阶分子/分母，没有零极点配对问题，init 直接 `biquad_c2d_bilinear` → 
+`biquad_filter_init` 写进单个 `biquad_filter_t`。详见下文"Notch"一节。
 
 **双二阶传递函数:** `H(z) = (b0 + b1·z⁻¹ + b2·z⁻²) / (1 + a1·z⁻¹ + a2·z⁻²)`
 
@@ -168,6 +174,67 @@ Chebyshev 运行时算原型传自己的 `k` 和有限零点。级联增益校�
 - cheby2 奇数阶零点跳过阈值 1e-4（合法零点 |sinθ| ≥ 0.38，余量 3 个数量级；
   对软浮点 libm 的 sinf(π) 误差也留足 3 个数量级）
 
+**Notch（`notch_filter.h/c`）**
+
+唯一单阶数、无类型变体的滤波器，因此**不用 X-macro**：一个 `notch_filter_t`、
+一个 `notch_init(f, f0, xi, g, fs)`。`sections[1]` 仍是标准 `biquad_filter_t`，
+update/reset 复用 `biquad_cascade_*`。
+
+```
+H(s) = (s² + 2ξgω₀s + ω₀²) / (s² + 2ξω₀s + ω₀²)     ω₀ = 2πf₀
+```
+
+- **预畸只保中心频率与深度**。`ω₀ = 2π·prewarp(f0, fs)` 使数字域谷底精确落在
+  `f0`、深度精确等于 `g`（全频段，含近 Nyquist）。但双线性对整个频率轴非线性，
+  **宽度被扭曲**：数字域宽度 = `2ξg·f₀` 乘以随 `f0/fs` 变化的因子——`f0/fs ≲ 0.02`
+  时 < 1%，`f0/fs = 0.2` 时窄 25%，再高完全走样。`xi` 始终按模拟原型带宽因子解释。
+- **`g` 上限 `0.9999`**：`g = 1` 时分子分母逐项相等、`H ≡ 1`，数学上就是直通，
+  按 `valid=0` 直通部署而不是烧一个节去实现恒等——后者要把高 Q 极点结构的状态
+  推到 1.5e5 量级再精确相消回单位增益，纯属自找数值麻烦。
+- **三道闸**（全部 fail-closed → `valid=0`、`num_sections=0`）：参数闸
+  （`!(x > 0)` 式写法，同时拦 NaN）、f32 设计参数范围闸、`biquad_filter_init`
+  + `check_cascade_gains` 的逐级闸。注意 butter 用的 `fc <= 0.0f` 拦不住 NaN
+  （NaN 比较恒假），notch 没有下游 `design_filter` 兜底，必须在入口用 `!(x>0)`。
+
+**f32 设计参数范围闸的来历**（这一段是本族最贵的知识，别丢）：
+
+> **范围界定**：本库**不负责**修复/补偿/消除 f32 系数量化误差，那是数值类型的
+> 固有代价、属于调用方的选择范围。这道闸不试图修好什么，只拒绝已知会**静默
+> 失真**的参数范围，性质与 `biquad_filter_init` 的极点半径裕量闸相同。下面整段
+> 只服务于"阈值该取多少"，不是"库要不要管量化误差"。
+
+DF-II 下的陷波器有一个窄而可精确刻画的失效区。分子分母的 s⁰、s² 系数相同，
+只有 s¹ 不同，故 `b1 == a1` **逐位相等**，于是
+
+```
+H(z) = 1 + c(z⁻² − 1) / (1 + a1z⁻¹ + a2z⁻²),   c = 2ξω₀K(1−g)/a0
+```
+
+**陷波深度只活在 c 里**，而 `c ~ 1e-4` 量级；b0/b2/a2 各带 ±1 ulp（≈1.2e-7）
+绝对误差，对 c 的扰动是 0.1%。这点扰动被陷波频率处的极小分母放大：
+`|D(e^{jθ₀})| ≈ 8π²ξ(f0/fs)²`（f0=20Hz/48kHz 算出 6.96e-7，数值求值实测
+6.955e-7）。相对深度误差 `≈ δ/(g·|D|) ∝ 1/[ξg(f0/fs)²]`，放大 ~1e7 倍，
+正好吃掉 f32 的全部 7.2 位十进制。
+
+时域上等价：DF-II 状态放大 `1/(1+a1+a2) ≈ (fs/πf0)²` 倍（f0=20Hz/48kHz 时
+1.5e5），输出要把 ~1.45e6 量级的三项相消到 `g`，而系数误差 `δb·|w| ≈ 0.17`
+与真实输出同量级。**窄带低通没这个问题**——分子三项同号相加、输出与状态同量级；
+陷波是全库唯一在 DF-II 下病态的滤波器。
+
+判据 `Q = ξ·g·(ω₀/K)² ≥ 5e-8`（纯乘除，无新 libm）。**标定必须在邻域上取最坏，
+不能采孤立点**：失效在 0.002 Hz 尺度上剧烈震荡（f0 = 19.95~20.05 Hz @48kHz,
+ξ=0.05, g=0.1 区间内比值在 1.04 和 3.04 之间随机跳），那些"好"的值只是舍入运气。
+按孤立点标定会得出乐观 25~50 倍的阈值。实测邻域最坏值：Q=2e-9 → 12.1×，
+5e-8 → 1.17×，1e-7 → 1.04×。实用刻度：ξ=0.05、g=0.1 时需 `f0/fs ≥ 1.007e-3`
+（48kHz 下 f0 ≥ 48 Hz，8kHz 下 f0 ≥ 8 Hz）；工频 50/60Hz @48kHz 在内。
+
+**已被否掉的方案**（别再试）：旁通形式（深度改由 c 单点承载）与耦合型
+（coupled form）在**同一个** f0/fs 处一起失效；耦合型把状态从 1.4e6 压到
+3.7e3，包络分毫未动——病根是系数量化，不是状态溢出。耦合型若用 `acos` 从
+a1 反解角度会更加病态（θ 误差 0.9%），必须直接用模拟原型算 θ、r，即使用对了
+可用下限也只比 DF-II 低约 25 倍（f0/fs ≳ 4e-5，代价是库中第一个非 DF-II
+结构、每样本 7 次乘法 vs 5 次）。真需要那么低的 f0/fs 时再回头捡这段。
+
 ### 文件
 
 | 文件 | 用途 |
@@ -176,18 +243,23 @@ Chebyshev 运行时算原型传自己的 `k` 和有限零点。级联增益校�
 | `include/filter_utils.h` | 设计工具 (complex_t, prewarp, 变换, zpk2sos, design_filter, check_cascade_gains) |
 | `include/butter_filter.h` | Butterworth API（X-macro 生成 32 结构体 + inline update/reset） |
 | `include/cheby_filter.h` | Chebyshev I & II API（X-macro 生成 64 结构体 + inline update/reset） |
+| `include/notch_filter.h` | Notch API（单结构体 + inline update/reset；预畸语义与三道闸的文档） |
 | `src/biquad_filter.c` | Biquad 实现（init, reset, get_output, get_input, c2d_bilinear） |
 | `src/filter_utils.c` | 设计工具实现 + 共享设计管线 design_filter + 增益校验 |
 | `src/butter_filter.c` | 预计算极点表、按阶 init（管线走 design_filter） |
 | `src/cheby_filter.c` | 运行时原型计算、按阶 init（管线走 design_filter） |
+| `src/notch_filter.c` | 参数闸 + f32 数值闸 + 直写 biquad（不走 design_filter） |
 | `test/test_biquad.c` | Biquad 测试（含裕量对称性、积分器 reset、NaN 语义） |
 | `test/test_butter.c` | Butterworth 测试（全类型、多阶数 + 全阶扫掠 + 近实配对/窄带回归） |
 | `test/test_cheby.c` | Chebyshev I/II 测试（全类型、多阶数 + 全阶扫掠 + 高 Q 配对回归） |
+| `test/test_notch.c` | Notch 测试（参数闸、数值闸边界、深度/DC/Nyquist、g 上限、reset、f 与 xi 扫掠） |
 | `test/test_butter_with_py.c` | 生成 CSV（argv 指定路径 + valid 检查）与 scipy 对比 |
 | `test/test_cheby_with_py.c` | 生成 CSV（argv 指定路径 + valid 检查）与 scipy 对比 |
+| `test/test_notch_with_py.c` | 生成**频响** CSV（25 个相对 f0 的频点 × 4 配置；valid 失败拒绝出表） |
 | `test/test_butter_use_py.py` | Python 参考滤波器（Butterworth，含绘图，argv 指定数据目录） |
 | `test/test_cheby_use_py.py` | Python 参考滤波器（Chebyshev，含绘图，argv 指定数据目录） |
+| `test/test_notch_use_py.py` | Notch f64 参考频响（scipy.signal.bilinear 独立实现 c2d）对拍；无 numpy/scipy 时 exit 77 |
 | `test/compare_scipy.py` | 稳态精度对比（已注册 ctest，无 numpy/scipy 时 exit 77 SKIP） |
 | `test/verify_zpk_gain.py` | 验证 float32 精度足够 zpk 增益追踪（独立复现 scipy 管线，f64 vs f32） |
 | `CMakeLists.txt` | 顶层 CMake（库带 -ffunction-sections/-fdata-sections） |
-| `test/CMakeLists.txt` | 测试可执行文件 + CTest 注册（7 项，含 CSV 生成 + scipy 对比 + zpk 增益精度验证） |
+| `test/CMakeLists.txt` | 测试可执行文件 + CTest 注册（10 项，含 CSV 生成 + scipy 对比 + notch 频响对拍 + zpk 增益精度验证） |
