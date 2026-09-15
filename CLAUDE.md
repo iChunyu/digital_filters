@@ -29,14 +29,15 @@ cd build && ctest --output-on-failure
 + zeros 128 B + sos 192 B ≈ 448 B，加上调用侧原型数组 ~128 B；该数值在 x86-64 -O2 下
 实测成立，-O0 下约 1.1 KB）。ARM Cortex-M4 `-Os -fstack-usage` 实测最坏一条链为
 `cheby2_lp_init` 208 B + `design_filter` 544 B + `zpk2sos` 192 B ≈ 944 B。
-`notch_init` 走的是直写 biquad 的短路径（无零极点工作数组），x86-64 -O2 实测
-仅 **112 B**，是全场最小的一条 init 链。
+`notch_init` / `peak_init` 走的是直写 biquad 的短路径（无零极点工作数组），
+x86-64 -O2 实测均为 **112 B**，是全场最小的一条 init 链。
 运行时 `_update` 全 inline（biquad → 级联 → 逐阶函数三层全部
 头文件内联），无额外栈开销。建议 MCU 主栈 ≥ 2 KB（两平台实测峰值均有 2× 以上余量）。
 
 **libm 依赖**: `biquad_filter_init`/`_update`/`_reset` 路径零 libm 调用（裕量为纯乘加
 代数式），裸机不链 libm 也可用 biquad 层。Butterworth init 无需 libm（ROM 查表）。
 Chebyshev init 需要 `logf/sqrtf/sinhf/coshf/cosf/sinf`（仅 init 时）。
+Notch / Peak init 需要 `prewarp` 的 `tanf`（仅 init 时，用于预畸）。
 
 **Flash 粒度**: 库以 `-ffunction-sections/-fdata-sections` 编译；链接时加
 `--gc-sections` 只拉入用到的滤波器族（实测 arm-none-eabi-gcc / Cortex-M4 / -O2：
@@ -65,6 +66,10 @@ update/reset 为头文件 inline，不占库 text。
 **Notch（陷波）**是独立的第四族，**不走这条流水线**：它是二阶的，只有一对
 一阶分子/分母，没有零极点配对问题，init 直接 `biquad_c2d_bilinear` → 
 `biquad_filter_init` 写进单个 `biquad_filter_t`。详见下文"Notch"一节。
+
+**Peak（峰值）**是第五族，与 Notch **严格互为倒数**（`H_peak(ξ,g) ≡ 1/H_notch(ξ,1/g)`，
+逐点恒等）。结构、三道闸、测试骨架全部与 Notch 同构，区别只有两处：`g > 1`，
+以及全部数值判据用**等效陷波深度** `d = 1/g`。详见下文"Peak"一节。
 
 **双二阶传递函数:** `H(z) = (b0 + b1·z⁻¹ + b2·z⁻²) / (1 + a1·z⁻¹ + a2·z⁻²)`
 
@@ -219,7 +224,7 @@ H(z) = 1 + c(z⁻² − 1) / (1 + a1z⁻¹ + a2z⁻²),   c = 2ξω₀K(1−g)/a
 时域上等价：DF-II 状态放大 `1/(1+a1+a2) ≈ (fs/πf0)²` 倍（f0=20Hz/48kHz 时
 1.5e5），输出要把 ~1.45e6 量级的三项相消到 `g`，而系数误差 `δb·|w| ≈ 0.17`
 与真实输出同量级。**窄带低通没这个问题**——分子三项同号相加、输出与状态同量级；
-陷波是全库唯一在 DF-II 下病态的滤波器。
+陷波与峰值（互为倒数的同一病态）是全库仅有的两族在 DF-II 下病态的滤波器。
 
 判据 `Q = ξ·g·(ω₀/K)² ≥ 5e-8`（纯乘除，无新 libm）。**标定必须在邻域上取最坏，
 不能采孤立点**：失效在 0.002 Hz 尺度上剧烈震荡（f0 = 19.95~20.05 Hz @48kHz,
@@ -235,6 +240,46 @@ a1 反解角度会更加病态（θ 误差 0.9%），必须直接用模拟原型
 可用下限也只比 DF-II 低约 25 倍（f0/fs ≳ 4e-5，代价是库中第一个非 DF-II
 结构、每样本 7 次乘法 vs 5 次）。真需要那么低的 f0/fs 时再回头捡这段。
 
+**Peak（`peak_filter.h/c`）**
+
+Notch 的**严格对偶**，全库唯一能与另一族做系数级对照的滤波器：
+
+```
+H(s) = (s² + 2ξω₀s + ω₀²) / (s² + 2ξ/g·ω₀s + ω₀²)     ω₀ = 2πf₀，g > 1
+```
+
+- **为什么分母带 g（H1）而不是分子带 g（H2）**：`H1(ξ,g) ≡ 1/H2(ξ,1/g)` 逐点恒等
+  （数值验证 2e-15），所以 g 的 boost 就是已验证的 (1/g) 陷波的镜像——同一个 ξ 下
+  boost/cut 的相对带宽一致。H2 做 boost 会宽 g 倍：g=10、ξ=0.05、f₀=20 Hz 时
+  √g 电平全宽 H1 是 0.632 Hz、H2 是 6.32 Hz，且 H2 在 f₀/2 处已 +1.58 dB
+  （H1 只有 +0.02 dB）。若哪天要"Q 与增益无关"的经典 constant-Q peaking EQ，
+  两个都不是，得换 RBJ 对称型（√g 平分给分子分母，√g 电平处全宽恒为
+  `2ξ·f₀`，与增益无关）。
+- **全部数值判据用统一参数 `d = 1/g`（等效陷波深度）**："g 的 boost 有多难做"与
+  "深度 d = 1/g 的陷波有多难做"是同一个问题。闸门判据
+  `Q = ξ·d·(ω₀/K)² ≥ 5e-8`，**不能用 g**：用 g 会被放大 g² 倍，g=10 时 48 kHz 下
+  20 Hz 会"过闸"，而它的镜像陷波在同一点是被拒的。
+- **半径闸几乎处处比数值闸紧**——与 Notch 恰好相反。Notch 的极点阻尼是 ξ（与 g
+  无关），Peak 的是 ξ/g。两条边界 `2ξd·r ≥ 5e-5`（半径）与 `ξd·r² ≥ 5e-8`（数值）
+  在 `ξd = 0.0125` 处交叉：ξd < 0.0125（绝大多数实用参数）半径闸先触发，
+  ξd > 0.0125 数值闸先触发。所以 boost 的实际上限是
+  `g ≤ 4e4·ξ·tan(πf0/fs)`（ξ=0.05：f0/fs=0.05 → g≈317；f0/fs=2e-3 → g≈12.6）。
+  测试里两条闸各有专用档位（ξ=0.5、f0≈0.28~0.42 Hz 才让数值闸露出来）。
+- **`g ≤ 1.0001` 按直通**（镜像 notch 的 `g ≥ 0.9999`）。判据 `!(d < 0.9999f)`；
+  `1.0f/1.0001f` 在 f32 下恰好舍入到 `0.9999f`，等号即拒，与 notch 严格镜像。
+- **f32 实测标定**（f32 系数 + f32 DF-II 状态递推，扫 f0 的 ±1% 邻域取最坏；
+  f0=20 Hz、ξ=0.05、g=10）：1 kHz 误差 < 3e-5、8 kHz 2.8e-4、48 kHz 峰高
+  7.11~11.06（理想 10，被半径闸拒）。镜像核对：同点 g=0.1 的陷波深度
+  0.126~0.166。**标定必须走时域**——"f32 系数 + f64 解析求值"给 0.4%，低估两个
+  数量级：它漏掉 f32 **状态**舍入，而这里 `|w| ≈ 1/|D(e^{jθ0})|` 到 1e7 量级，
+  其 ulp 本身就和输出同量级。系数误差只是病态的一半。
+- **对偶不变量测试**：`peak_init(f0,ξ,g,fs)` 与 `notch_init(f0,ξ,1/g,fs)` 的 z 域
+  系数向量互为交换（只差公共归一化因子 `1/notch.num_z[0]`），在 50~400 Hz 扫掠上
+  逐点校验；`src/peak_filter.c` 把分母写成 `2·xi·d·w0`（而非 `2·xi·w0/g`）正是
+  为了让它在 f32 下逐位成立。CSV 层面同样对得上：两族配置表互为倒数，
+  f32 实测 `max|peak·notch − 1| = 2.2e-3`。
+- init 走与 notch 相同的直写 biquad 短路径，栈同为 112 B。
+
 ### 文件
 
 | 文件 | 用途 |
@@ -244,22 +289,27 @@ a1 反解角度会更加病态（θ 误差 0.9%），必须直接用模拟原型
 | `include/butter_filter.h` | Butterworth API（X-macro 生成 32 结构体 + inline update/reset） |
 | `include/cheby_filter.h` | Chebyshev I & II API（X-macro 生成 64 结构体 + inline update/reset） |
 | `include/notch_filter.h` | Notch API（单结构体 + inline update/reset；预畸语义与三道闸的文档） |
+| `include/peak_filter.h` | Peak API（与 Notch 同构；H1 形式的来历、d = 1/g 判据、boost 上限的文档） |
 | `src/biquad_filter.c` | Biquad 实现（init, reset, get_output, get_input, c2d_bilinear） |
 | `src/filter_utils.c` | 设计工具实现 + 共享设计管线 design_filter + 增益校验 |
 | `src/butter_filter.c` | 预计算极点表、按阶 init（管线走 design_filter） |
 | `src/cheby_filter.c` | 运行时原型计算、按阶 init（管线走 design_filter） |
 | `src/notch_filter.c` | 参数闸 + f32 数值闸 + 直写 biquad（不走 design_filter） |
+| `src/peak_filter.c` | 同上，判据用 d = 1/g；含 H1 vs H2 的选型理由与 f32 时域标定 |
 | `test/test_biquad.c` | Biquad 测试（含裕量对称性、积分器 reset、NaN 语义） |
 | `test/test_butter.c` | Butterworth 测试（全类型、多阶数 + 全阶扫掠 + 近实配对/窄带回归） |
 | `test/test_cheby.c` | Chebyshev I/II 测试（全类型、多阶数 + 全阶扫掠 + 高 Q 配对回归） |
 | `test/test_notch.c` | Notch 测试（参数闸、数值闸边界、深度/DC/Nyquist、g 上限、reset、f 与 xi 扫掠） |
+| `test/test_peak.c` | 同上镜像 + **对偶不变量**（与 notch_init(1/g) 的系数互为交换）+ 半径闸/数值闸各一档 |
 | `test/test_butter_with_py.c` | 生成 CSV（argv 指定路径 + valid 检查）与 scipy 对比 |
 | `test/test_cheby_with_py.c` | 生成 CSV（argv 指定路径 + valid 检查）与 scipy 对比 |
 | `test/test_notch_with_py.c` | 生成**频响** CSV（25 个相对 f0 的频点 × 4 配置；valid 失败拒绝出表） |
+| `test/test_peak_with_py.c` | 同上，配置表是 notch 表的逐项倒数（g → 1/g），频率网格相同 |
 | `test/test_butter_use_py.py` | Python 参考滤波器（Butterworth，含绘图，argv 指定数据目录） |
 | `test/test_cheby_use_py.py` | Python 参考滤波器（Chebyshev，含绘图，argv 指定数据目录） |
 | `test/test_notch_use_py.py` | Notch f64 参考频响（scipy.signal.bilinear 独立实现 c2d）对拍；无 numpy/scipy 时 exit 77 |
+| `test/test_peak_use_py.py` | Peak f64 参考频响同上；容差按 max\|H_ref\| 归一（峰高到 50，绝对容差无意义） |
 | `test/compare_scipy.py` | 稳态精度对比（已注册 ctest，无 numpy/scipy 时 exit 77 SKIP） |
 | `test/verify_zpk_gain.py` | 验证 float32 精度足够 zpk 增益追踪（独立复现 scipy 管线，f64 vs f32） |
 | `CMakeLists.txt` | 顶层 CMake（库带 -ffunction-sections/-fdata-sections） |
-| `test/CMakeLists.txt` | 测试可执行文件 + CTest 注册（10 项，含 CSV 生成 + scipy 对比 + notch 频响对拍 + zpk 增益精度验证） |
+| `test/CMakeLists.txt` | 测试可执行文件 + CTest 注册（13 项，含 CSV 生成 + scipy 对比 + notch/peak 频响对拍 + zpk 增益精度验证） |

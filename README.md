@@ -11,6 +11,7 @@
 
 所有结构体由 X-macro 生成，阶数编译时确定，biquad 节内嵌在结构体里。
 不需要 `malloc`，不需要 `free`，离开作用域自动回收。`<stdlib.h>` 都不用 include。
+（Notch / Peak 是固定二阶，各一个结构体，不走 X-macro。）
 
 ### 支持的滤波器
 
@@ -19,9 +20,15 @@
 | **Butterworth** | 最大平坦 | 单调衰减 | 老实人，不搞花活 |
 | **Chebyshev Type I** | 等波纹（指定纹波 dB） | 单调衰减 | 通带里蹦迪，阻带装死 |
 | **Chebyshev Type II** | 单调 | 等波纹（指定最小衰减 dB） | 反过来，通带佛系阻带蹦迪 |
+| **Notch（陷波）** | 二阶，f0 处衰减到 g | — | 只掐一个频点，别处不动 |
+| **Peak（峰值）** | 二阶，f0 处提升到 g | — | 陷波器的倒数，专治"这一段没劲" |
 
 四种类型：**低通 (LP)**、**高通 (HP)**、**带通 (BP)**、**带阻 (BS)**。
 原型阶数 1~8（BP/BS 有效阶数翻倍，最高 16 阶）。
+
+Notch / Peak 是独立的二阶族，参数是 `(f0, xi, g, fs)`：`g < 1` 用
+`notch_init`（线性衰减），`g > 1` 用 `peak_init`（线性增益）；两者满足
+`H_peak(ξ,g) ≡ 1 / H_notch(ξ,1/g)`，boost 与 cut 的带宽语义对称。
 
 ## 快速开始
 
@@ -38,8 +45,8 @@ cmake --build build
 cd build && ctest --output-on-failure
 ```
 
-预期输出：**7 项测试全部通过**（前 3 项为 C 单元/回归测试；后 4 项为 CSV
-生成 + scipy 黄金参考对比 + zpk 增益精度验证，未安装 numpy/scipy 时自动 SKIP）。
+预期输出：**13 项测试全部通过**（5 项 C 单元/回归测试 + 4 项 CSV 生成 +
+3 项黄金参考对比 + 1 项 zpk 增益精度验证；后 8 项依赖 numpy/scipy，未安装时自动 SKIP）。
 
 ### 基本用法
 
@@ -91,6 +98,30 @@ cheby2_hp_2nd_t c2;
 cheby2_hp_2nd_init(&c2, 5.0f, 40.0f, 40.0f);  // fc, fs, stopband_dB
 cheby2_hp_2nd_reset(&c2, 0.0f);
 float y = cheby2_hp_2nd_update(&c2, x);
+```
+
+陷波（工频 50 Hz @ 1 kHz，深 −20 dB ⇒ `g = 0.1`）：
+
+```c
+#include "notch_filter.h"
+
+notch_filter_t n;
+notch_init(&n, 50.0f, 0.05f, 0.1f, 1000.0f);  // f0, xi, g, fs
+if (!n.valid) { /* 参数被闸拒（如 f0/fs 太小）→ 直通 */ }
+notch_reset(&n, 0.0f);
+float y = notch_update(&n, x);
+```
+
+峰值（同频点 +20 dB ⇒ `g = 10`）。与陷波**逐点互为倒数**，语义完全对称：
+
+```c
+#include "peak_filter.h"
+
+peak_filter_t p;
+peak_init(&p, 50.0f, 0.05f, 10.0f, 1000.0f);  // f0, xi, g, fs
+if (!p.valid) { /* 参数被闸拒 → 直通 */ }
+peak_reset(&p, 0.0f);
+float y = peak_update(&p, x);
 ```
 
 ### 命名规则
@@ -172,6 +203,9 @@ C 代码生成 CSV → scipy 做黄金参考 → 对比稳态精度（跳过瞬�
 - 截止频率 `0 < fc < fs/2`
 - BP/BS 需 `fc1 < fc2` 且 `fc2 < fs/2`
 - Chebyshev 的 `ripple_db` > 0
+- Notch：`0 < f0 < fs/2`、`xi > 0`、`0 < g < 0.9999`；Peak：同前但 `g > 1.0001`
+  （`g` 贴近 1 时峰/谷浅于 0.001 dB，按直通部署）。两者另有 f32 数值包络闸：
+  可用区间随 `f0/fs` 与 `g` 收窄，被拒时 `valid = 0`（见头文件里的实测刻度）
 - 任一校验失败 → `valid = 0`，update 直通返回输入。**调用方必须检查
   `valid`**——直通是"宁可不过滤也不要错误输出"的兜底，不是静默成功的保证
 
@@ -221,21 +255,31 @@ digital_filters/
 │   ├── biquad_filter.h          # 单节 biquad（含 inline update）
 │   ├── filter_utils.h           # 设计工具 + 类型定义
 │   ├── butter_filter.h          # Butterworth API
-│   └── cheby_filter.h           # Chebyshev I & II API
+│   ├── cheby_filter.h           # Chebyshev I & II API
+│   ├── notch_filter.h           # 陷波 API（f0, xi, g<1, fs）
+│   └── peak_filter.h            # 峰值 API（f0, xi, g>1, fs；陷波的倒数）
 ├── src/
 │   ├── biquad_filter.c
 │   ├── filter_utils.c
 │   ├── butter_filter.c
-│   └── cheby_filter.c
+│   ├── cheby_filter.c
+│   ├── notch_filter.c
+│   └── peak_filter.c
 ├── test/
 │   ├── CMakeLists.txt
 │   ├── test_biquad.c
 │   ├── test_butter.c
 │   ├── test_cheby.c
+│   ├── test_notch.c
+│   ├── test_peak.c
 │   ├── test_butter_with_py.c     # 生成 CSV 与 scipy 对比
 │   ├── test_cheby_with_py.c
+│   ├── test_notch_with_py.c
+│   ├── test_peak_with_py.c
 │   ├── test_butter_use_py.py     # Python 参考滤波器（含绘图）
 │   ├── test_cheby_use_py.py
+│   ├── test_notch_use_py.py
+│   ├── test_peak_use_py.py
 │   ├── compare_scipy.py          # 稳态精度对比
 │   └── verify_zpk_gain.py        # float32 精度验证（独立复现 scipy 管线）
 ├── CMakeLists.txt

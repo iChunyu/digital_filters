@@ -14,6 +14,12 @@ add_executable(test_notch test_notch.c)
 target_link_libraries(test_notch PRIVATE digital_filters m)
 add_test(NAME test_notch COMMAND test_notch)
 
+# test_peak.c 另外包含 notch_filter.h——对偶不变量测试要拿同一组参数的
+# 陷波系数来对照（H_peak(ξ,g) ≡ 1/H_notch(ξ,1/g)）。
+add_executable(test_peak test_peak.c)
+target_link_libraries(test_peak PRIVATE digital_filters m)
+add_test(NAME test_peak COMMAND test_peak)
+
 # 与 Python 对比用的可执行文件：生成器把 CSV 写进 build 目录；
 # scipy 对比从**同一个**目录读回，这样源码目录里的陈旧 CSV
 # 永远不会遮蔽新跑出来的结果。
@@ -26,10 +32,14 @@ target_link_libraries(test_cheby_with_py PRIVATE digital_filters m)
 add_executable(test_notch_with_py test_notch_with_py.c)
 target_link_libraries(test_notch_with_py PRIVATE digital_filters m)
 
+add_executable(test_peak_with_py test_peak_with_py.c)
+target_link_libraries(test_peak_with_py PRIVATE digital_filters m)
+
 # 把配套的 Python 脚本拷到可执行文件旁边
 configure_file(test_butter_use_py.py ${CMAKE_CURRENT_BINARY_DIR}/test_butter_use_py.py COPYONLY)
 configure_file(test_cheby_use_py.py ${CMAKE_CURRENT_BINARY_DIR}/test_cheby_use_py.py COPYONLY)
 configure_file(test_notch_use_py.py ${CMAKE_CURRENT_BINARY_DIR}/test_notch_use_py.py COPYONLY)
+configure_file(test_peak_use_py.py ${CMAKE_CURRENT_BINARY_DIR}/test_peak_use_py.py COPYONLY)
 
 find_package(Python3 COMPONENTS Interpreter)
 if(Python3_FOUND)
@@ -39,6 +49,8 @@ if(Python3_FOUND)
              COMMAND test_cheby_with_py ${CMAKE_CURRENT_BINARY_DIR}/test_cheby_data.csv)
     add_test(NAME notch_csv_gen
              COMMAND test_notch_with_py ${CMAKE_CURRENT_BINARY_DIR}/test_notch_data.csv)
+    add_test(NAME peak_csv_gen
+             COMMAND test_peak_with_py ${CMAKE_CURRENT_BINARY_DIR}/test_peak_data.csv)
     add_test(NAME scipy_compare
              COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/compare_scipy.py
                      ${CMAKE_CURRENT_BINARY_DIR})
@@ -54,6 +66,15 @@ if(Python3_FOUND)
                      ${CMAKE_CURRENT_BINARY_DIR})
     set_tests_properties(notch_py_compare PROPERTIES
         DEPENDS "notch_csv_gen"
+        SKIP_RETURN_CODE 77)
+
+    # 峰值滤波器的频响对拍，与上面同构。被测原型与陷波互为倒数
+    # （H1(ξ,g) ≡ 1/H2(ξ,1/g)），所以两个 CSV 也可以直接逐点互倒比较。
+    add_test(NAME peak_py_compare
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_peak_use_py.py
+                     ${CMAKE_CURRENT_BINARY_DIR})
+    set_tests_properties(peak_py_compare PROPERTIES
+        DEPENDS "peak_csv_gen"
         SKIP_RETURN_CODE 77)
 
     # 独立复现 zpk 增益管线的 f64-vs-f32 精度对比。只需要 numpy

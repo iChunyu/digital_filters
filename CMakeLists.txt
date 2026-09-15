@@ -9,6 +9,7 @@ add_library(digital_filters STATIC
     src/butter_filter.c
     src/cheby_filter.c
     src/notch_filter.c
+    src/peak_filter.c
 )
 
 target_include_directories(digital_filters
