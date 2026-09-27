@@ -16,11 +16,13 @@ target_include_directories(digital_filters
     PUBLIC include
 )
 
-# 把每个函数/数据项放进各自的段，使带 --gc-sections 的 MCU 链接器
-# 只拉入实际用到的滤波器族。实测（arm-none-eabi-gcc / Cortex-M4 / -O2）：
-# 库的四个目标文件 .text 合计约 19.8 KB，而只用 butter_lp_2nd 的程序
-# 链接后 text 仅约 1.4 KB。缺这些标志时链接器按目标文件粒度工作，
-# 会把 butter_filter.o 整体拉入（4.3 KB，含全部 32 个 init）。
+# 把每个函数/数据项放进各自的段，使带 --gc-sections 的 MCU 链接器按函数粒度
+# 拉取。实测（arm-none-eabi-gcc 16.2 / Cortex-M4，.text + .rodata）：
+# 六个目标文件 -Os 合计 14686 B、-O2 合计 18204 B；只用 butter_lp_2nd 的最小
+# 程序（init 一次 + update 八次，--gc-sections -e main）链接后 text + .rodata
+# 实测 11308 B（链 newlib libm）——设计管线裁不掉，因为 design_filter 的运行时
+# switch(type) 引用全部四种频率变换。缺这些标志时链接器按目标文件粒度工作，
+# 会把 butter_filter.o 整体拉入（-Os 2590 B / -O2 4496 B，含全部 32 个 init）。
 # 使用方必须加 --gc-sections（或对应链接器选项）才能受益；
 # 否则该标志不起作用。
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")

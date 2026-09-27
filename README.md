@@ -1,7 +1,7 @@
 # digital_filters — 数字滤波器库（C 语言）
 
 > MCU 用的 IIR 滤波器库。零 `malloc`，零 `double`，全部 `float` 一把梭。
-> 和 scipy 对过答案了，稳态误差在 1e-6 量级 🤏
+> 和 scipy 对过答案了，稳态误差 1e-6 ~ 1.5e-5 🤏
 
 ## 项目简介
 
@@ -46,7 +46,8 @@ cd build && ctest --output-on-failure
 ```
 
 预期输出：**13 项测试全部通过**（5 项 C 单元/回归测试 + 4 项 CSV 生成 +
-3 项黄金参考对比 + 1 项 zpk 增益精度验证；后 8 项依赖 numpy/scipy，未安装时自动 SKIP）。
+3 项黄金参考对比 + 1 项 zpk 增益精度验证）。4 项 CSV 生成只要求配置期能找到
+Python3；4 项 Python 对比在缺 numpy/scipy 时以退出码 77 自动 SKIP。
 
 ### 基本用法
 
@@ -182,19 +183,31 @@ C 代码生成 CSV → scipy 做黄金参考 → 对比稳态精度（跳过瞬�
 ### MCU 使用
 
 - **零 `malloc`**：`<stdlib.h>` 不需要，堆管理器关掉照样跑
-- Butterworth init **不调 `cosf`/`sinf`**（ROM 查表）；`biquad_filter_init`
-  / `update` 路径**完全不依赖 libm**（裕量检查为纯乘加代数形式，绝对值用本地
-  `abs_f` 而非 `fabsf`，不依赖编译器内建）——裸机固件不链 libm 也能用
-  biquad 层（`-fno-builtin -ffreestanding` 下 `nm -u biquad_filter.o` 实测为空）
-- Chebyshev init 需 `logf`/`sqrtf`/`sinhf`/`coshf`（仅 init 一次，非逐采样）
+- **只有 biquad 层不依赖 libm**：`biquad_filter_init`/`update` 是纯乘加代数
+  形式，绝对值用本地 `abs_f` 而非 `fabsf`，不依赖编译器内建——裸机固件不链 libm
+  也能用它（`-fno-builtin -ffreestanding` 下 `nm -u biquad_filter.o` 实测为空）
+- **所有族的 init 都要 libm**：设计管线经 `prewarp()` → `tanf()` 预畸，
+  `filter_utils.o` 另需 `sqrtf`/`fmaxf`/`memcpy`/`memset`。Butterworth 的 ROM
+  极点表只免掉原型计算的 `cosf`/`sinf`，**不减免 libm 链接**
+- Chebyshev init 另需 `powf`/`logf`/`cosf`/`sinf`/`sinhf`/`coshf`（仅 init 一次，
+  非逐采样）；`powf` 会连带拉入 errno 版数学内核（`__errno` 等），不含 reent
+  支持的裸机工程需自行提供这些符号
 - `_update`/`_reset` 全部为**头文件 `static inline`**：每样本路径是带字面量
-  节数的 biquad 级联循环，没有函数调用、没有运行时节数装载
+  节数的 biquad 级联循环，没有函数调用、没有运行时节数装载（需 −O1 及以上；
+  −O0 下函数体仍会生成，每样本 1~3 次 BL）
 - 全部 `float`，零 `double`
 - **flash 粒度**：库以 `-ffunction-sections/-fdata-sections` 编译，链接时
-  加 `--gc-sections`（或对应链接器选项）后，只拉入实际用到的滤波器族
-  （实测 arm-none-eabi-gcc / Cortex-M4 / -O2：库四个目标文件 .text 合计
-  19.8 KB，而只用 `butter_lp_2nd` 的程序链接后 text 仅 1.4 KB）。缺这些标志
-  时链接器按目标文件粒度拉取，`butter_filter.o` 会整体（4.3 KB，含全部
+  加 `--gc-sections`（或对应链接器选项）后按函数粒度拉取。实测
+  arm-none-eabi-gcc 16.2 / Cortex-M4 / `.text`+`.rodata`：六个目标文件
+  −Os 合计 **14.7 KB**、−O2 合计 **18.2 KB**；分项（−Os / −O2）——
+  `biquad_filter.o` 0.9/1.0 KB、`filter_utils.o` 4.9/5.8 KB、
+  `butter_filter.o` 2.6/4.5 KB、`cheby_filter.o` 5.7/6.2 KB、
+  `notch_filter.o` 与 `peak_filter.o` 各 0.3 KB
+- **`--gc-sections` 裁不掉设计管线**：`design_filter` 的运行时 `switch(type)`
+  引用全部四种频率变换，只用 `butter_lp_2nd` 的最小程序也要保留
+  `biquad`+`filter_utils`+`butter` 三个目标文件（−Os 全量 8.4 KB，链接并 GC 后
+  实测 ≈6.8 KB；链 newlib libm 后 ≈11.3 KB）。缺 `--gc-sections` 时链接器按
+  目标文件粒度拉取，`butter_filter.o` 整体（2.6 KB@−Os / 4.5 KB@−O2，含全部
   32 个 init）被拉入
 
 ### 参数校验与 fail-closed 语义
@@ -211,8 +224,8 @@ C 代码生成 CSV → scipy 做黄金参考 → 对比稳态精度（跳过瞬�
 
 ### 稳定性（三层 fail-closed 防线）
 
-1. 每节 biquad：三个 Jury 条件（f32 补偿求和消除窄带设计的误拒；
-   和恰好为 0 = 极点在单位圆上 → 拒绝）
+1. 每节 biquad：三个 Jury 条件（`sum3f` 补偿求和只回收两次加法的舍入，
+   窄带系数下与裸和逐位相同；和恰好为 0 = 量化后的极点确实落在 z=±1 → 拒绝）
 2. 极点半径裕量：任何极点半径 > 0.99995（距单位圆 < 5e-5，会振铃
    ≥ 10⁴ 采样）→ 拒绝。按极点半径本身判定（对称覆盖共轭对、异号实根
    对、非等实根对的主导极点——`a2 = r1·r2` 乘积检查有盲区）
@@ -222,9 +235,12 @@ C 代码生成 CSV → scipy 做黄金参考 → 对比稳态精度（跳过瞬�
 
 ### 频率包络（设计被拒 = 直通，属预期行为）
 
-- **极窄带 / 近 DC**：极点进入单位圆 5e-5 内会被拒。示例（fs=48 kHz）：
-  LP2 fc ≥ ~1.2 Hz 可用、fc = 1 Hz 被拒；LP1 fc ≥ ~0.45 Hz 可用。
-  不同阶数/族/类型边界不同，以 `valid` 为准
+- **极窄带 / 近 DC**：被拒的主因是 f32 系数量化让 DC/纹波边缘增益塌缩，
+   **不是**极点半径——`butter_lp_2nd`@48k 的 2 万点扫掠里极点半径闸一次都没
+  触发。实测（fs=48 kHz）：LP2 可用下界 ≈2.5 Hz、被拒设计全部落在 5.6 Hz 以下，
+  LP1 在 0.5 Hz 已可用。边界不是单调整数——LP2 的 2.5~6 Hz 区间以 0.001 Hz
+  步长扫会出现 valid 翻转（3500 点中 1469 个被拒）。不同阶数/族/类型边界各不
+  相同，一律以 `valid` 为准
 - **极近 Nyquist**：例如 BS1 [100, 23990]@48k 可用，[100, 23999.8]@48k
   被拒（极点半径 0.99997）
 - **超宽带 BP/BS**（fc2/fc1 ≳ 1000）：极点贴近 z=1 使内部状态巨大

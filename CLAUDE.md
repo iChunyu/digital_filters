@@ -11,45 +11,15 @@ Python 的 `#` 与 docstring。代码标识符、数学记号、单位、外部�
 正文用中文说明，标识符/公式原样嵌入，例如：
 `/* 极点倒序遍历变换，避免覆盖尚未读取的元素。 */`
 
-## 构建与测试
+## 运行时约束
 
-```bash
-cmake -B build -DBUILD_TESTS=ON
-cmake --build build
-cd build && ctest --output-on-failure
-```
+- **中断安全**: `_update` 和 `_reset` 不可重入。同一个滤波器结构体如果被 ISR 和
+  主循环共享，需在调用 `_update` 前关中断或使用双缓冲。
+- **非有限输入**: 热路径无 NaN/Inf 防护（每样本分支开销），非有限输入毒化状态
+  直至 reset；调用方在源头清洗。
 
-`BUILD_TESTS` 默认 ON。库为静态归档 (`libdigital_filters.a`)。
-
-### MCU / 嵌入式 使用注意事项
-
-**FPU 要求**: 所有滤波器 `_update` 路径执行密集 float 运算。建议使用带硬件 FPU 的 MCU（Cortex-M4/M7 及以上）。
-
-**栈需求**: init 期间峰值约 800 字节（`design_filter` → `zpk2sos` 调用链：poles 128 B
-+ zeros 128 B + sos 192 B ≈ 448 B，加上调用侧原型数组 ~128 B；该数值在 x86-64 -O2 下
-实测成立，-O0 下约 1.1 KB）。ARM Cortex-M4 `-Os -fstack-usage` 实测最坏一条链为
-`cheby2_lp_init` 208 B + `design_filter` 544 B + `zpk2sos` 192 B ≈ 944 B。
-`notch_init` / `peak_init` 走的是直写 biquad 的短路径（无零极点工作数组），
-x86-64 -O2 实测均为 **112 B**，是全场最小的一条 init 链。
-运行时 `_update` 全 inline（biquad → 级联 → 逐阶函数三层全部
-头文件内联），无额外栈开销。建议 MCU 主栈 ≥ 2 KB（两平台实测峰值均有 2× 以上余量）。
-
-**libm 依赖**: `biquad_filter_init`/`_update`/`_reset` 路径零 libm 调用（裕量为纯乘加
-代数式），裸机不链 libm 也可用 biquad 层。Butterworth init 无需 libm（ROM 查表）。
-Chebyshev init 需要 `logf/sqrtf/sinhf/coshf/cosf/sinf`（仅 init 时）。
-Notch / Peak init 需要 `prewarp` 的 `tanf`（仅 init 时，用于预畸）。
-
-**Flash 粒度**: 库以 `-ffunction-sections/-fdata-sections` 编译；链接时加
-`--gc-sections` 只拉入用到的滤波器族（实测 arm-none-eabi-gcc / Cortex-M4 / -O2：
-库四个目标文件 .text 合计 19.8 KB，而只用 `butter_lp_2nd` 的程序链接后 text 仅
-1.4 KB）。缺这些标志时链接器按目标文件粒度拉取，`butter_filter.o` 会整体
-（4.3 KB，含全部 32 个 init）被拉入。
-update/reset 为头文件 inline，不占库 text。
-
-**中断安全**: `_update` 和 `_reset` 不可重入。同一个滤波器结构体如果被 ISR 和主循环共享，需在调用 `_update` 前关中断或使用双缓冲。
-
-**非有限输入**: 热路径无 NaN/Inf 防护（每样本分支开销），非有限输入毒化状态直至 reset；调用方在源头清洗。
-
+栈需求、libm 依赖、Flash 粒度等 MCU 部署实测数据见 `mcu-deployment` skill
+（`.claude/skills/mcu-deployment/SKILL.md`）。
 
 ## 架构
 
@@ -118,9 +88,12 @@ Chebyshev 运行时算原型传自己的 `k` 和有限零点。级联增益校�
 - **静默降级为直通**: 分母为零或非有限、任一系数非有限、极点不稳定或裕量不足
   → 替换为单位直通 (`H(z)=1`)，`biquad_filter_init` 返回 0。宁可直通也不要发散/静音
 - **稳定性检测**：全部三个 Jury 条件 — `|a2| < 1`, `1 + a1 + a2 > 0`, `1 - a1 + a2 > 0`。
-  Jury 和用**补偿求和**（TwoSum 式 `sum3f`）——裸 f32 求和在窄带设计上会恰好
-  归零误拒合法滤波器；补偿和**恰好为 0** 则说明 f32 系数把极点放到了单位圆上
-  （量化塌缩到 z=±1）→ 拒绝。
+  Jury 和用**补偿求和**（TwoSum 式 `sum3f`），它回收的只是两次加法的舍入：
+  窄带系数（`a1 ≈ −2`、`a2 ≈ 1`）下两步加法本就精确（Sterbenz 引理），实测
+  200 万组随机窄带系数、1.4 万个设计扫描里裸和与补偿和**逐位相同**、判定从不
+  分歧。真正会归零的是**系数量化**本身——f32 的 a1/a2 已表达不了极点离单位圆的
+  余量，此时量化多项式的根确实落在 z=±1（实测 lp_2nd fc=1 Hz@48k 的量化极点
+  半径 ≈1.0001），补偿和无法挽回，判决同样是拒绝。
   外加**极点半径裕量检查**：半径 > 0.99995（距单位圆 < 5e-5，振铃 ≥ 10⁴ 采样）拒绝。
   按极点半径本身判定，不用 `a2`（`a2 = r1·r2` 乘积对非等实根对的主导极点有盲区，
   单侧 `a2 > 0.9999` 漏掉异号实根对）：共轭对 `a2 = r²`，实根
@@ -166,14 +139,24 @@ Chebyshev 运行时算原型传自己的 `k` 和有限零点。级联增益校�
 **设计管线级联校验（design_filter 部署后）**
 - `k` 必须有限且非零（k=0 会部署出输出恒 0 的"静音"滤波器）
 - 解析级联 DC/Nyquist 增益必须匹配族/类型/阶数奇偶的期望值：
-  精确结构增益（0/1，由 z=±1 零点保证）窗口 ±0.1；纹波边缘增益
-  （cheby1/2 偶数阶 `10^(−rp/rs/20)`）窗口 ±0.25。实测接受的合法设计
-  实现误差 ≤ ~3.4e-2（窄带 fc≈6 Hz@48k 的 f32 系数量化真实影响），
-  配错对缺陷偏差 ≥ 0.45——窗口两侧都有 ≥ 3× 分离。失败 → 整链直通
+  精确结构增益（0/1，由 z=±1 零点保证）窗口 ±0.1，实测接受的合法设计误差
+  ≤ ~3.4e-2（窄带 fc≈6 Hz@48k 的 f32 系数量化真实影响）；纹波边缘增益
+  （cheby1/2 偶数阶 `10^(−rp/rs/20)`）窗口 ±0.25，在极窄带会被合法设计吃掉
+  绝大部分余量（实测 cheby1_lp_2nd fc=2 Hz@48k rp=1：H(1)=1.1297 对期望
+  0.8913，偏差 0.2385；cheby1_lp_6th fc=3.5 Hz rp=0.001：H(1)=1.2480 对
+  0.9999，偏差 0.2481），该窗口在极窄带只起兜底作用。它拒绝的是**真失真**而非
+  误拒——解析 h0=0.50 的窄带设计，f32 时域递推实测 DC 增益确为 0.503。
+  失败 → 整链直通
 
 **频率包络（fail-closed 拒绝 = 直通，属预期）**
-- 极窄带/近 DC 设计极点进入单位圆 5e-5 内被拒（例：lp_2nd fc=1 Hz@48k 被拒、
-  fc=6 Hz 通过）；极近 Nyquist 同理（bs_1st [100,23999.8]@48k 被拒）
+- 极窄带/近 DC：被拒的主因是 **f32 系数量化让 DC/纹波边缘增益塌缩**，不是极点
+  半径。实测 `butter_lp_2nd`@48k 扫 1~20000 Hz（2 万点对数网格）共拒 2665 个
+  设计，全部落在 5.6 Hz 以下，按闸门归因：Jury 补偿和塌缩 1260、级联增益窗口
+  1405、极点半径 **0**。接受边界也不是单调整数：2.5~6.0 Hz 区间以 0.001 Hz 步长
+  扫，valid 状态翻转 11 次（3500 点中 1469 个被拒，最小通过 2.503 Hz、最大被拒
+  5.592 Hz），一律以 `valid` 为准。fc=1 Hz@48k 属另一种情形——量化后的极点确实
+  落在单位圆上（半径 ≈1.0001），由 Jury 闸拦下
+- 极近 Nyquist 同理（bs_1st [100,23999.8]@48k 被拒）
 - 超宽带 BP/BS（fc2/fc1 ≳ 1000）节内状态巨大（w ≈ 1/(1+a1+a2)），f32 状态
   更新噪声把阻带衰减地板抬到 ~−12 dB 量级（DF-II f32 固有，非缺陷）
 - cheby2 奇数阶零点跳过阈值 1e-4（合法零点 |sinθ| ≥ 0.38，余量 3 个数量级；
@@ -221,8 +204,8 @@ H(z) = 1 + c(z⁻² − 1) / (1 + a1z⁻¹ + a2z⁻²),   c = 2ξω₀K(1−g)/a
 6.955e-7）。相对深度误差 `≈ δ/(g·|D|) ∝ 1/[ξg(f0/fs)²]`，放大 ~1e7 倍，
 正好吃掉 f32 的全部 7.2 位十进制。
 
-时域上等价：DF-II 状态放大 `1/(1+a1+a2) ≈ (fs/πf0)²` 倍（f0=20Hz/48kHz 时
-1.5e5），输出要把 ~1.45e6 量级的三项相消到 `g`，而系数误差 `δb·|w| ≈ 0.17`
+时域上等价：DF-II 状态放大 `1/(1+a1+a2) ≈ (fs/(2πf0))² = 1/(4·tan²(πf0/fs))` 倍
+（f0=20Hz/48kHz 时 1.5e5），输出要把 ~1.45e6 量级的三项相消到 `g`，而系数误差 `δb·|w| ≈ 0.17`
 与真实输出同量级。**窄带低通没这个问题**——分子三项同号相加、输出与状态同量级；
 陷波与峰值（互为倒数的同一病态）是全库仅有的两族在 DF-II 下病态的滤波器。
 
@@ -271,45 +254,13 @@ H(s) = (s² + 2ξω₀s + ω₀²) / (s² + 2ξ/g·ω₀s + ω₀²)     ω₀ =
   f0=20 Hz、ξ=0.05、g=10）：1 kHz 误差 < 3e-5、8 kHz 2.8e-4、48 kHz 峰高
   7.11~11.06（理想 10，被半径闸拒）。镜像核对：同点 g=0.1 的陷波深度
   0.126~0.166。**标定必须走时域**——"f32 系数 + f64 解析求值"给 0.4%，低估两个
-  数量级：它漏掉 f32 **状态**舍入，而这里 `|w| ≈ 1/|D(e^{jθ0})|` 到 1e7 量级，
-  其 ulp 本身就和输出同量级。系数误差只是病态的一半。
-- **对偶不变量测试**：`peak_init(f0,ξ,g,fs)` 与 `notch_init(f0,ξ,1/g,fs)` 的 z 域
-  系数向量互为交换（只差公共归一化因子 `1/notch.num_z[0]`），在 50~400 Hz 扫掠上
-  逐点校验；`src/peak_filter.c` 把分母写成 `2·xi·d·w0`（而非 `2·xi·w0/g`）正是
-  为了让它在 f32 下逐位成立。CSV 层面同样对得上：两族配置表互为倒数，
-  f32 实测 `max|peak·notch − 1| = 2.2e-3`。
+  数量级：它漏掉 f32 **状态**舍入，而这里 `|w| ≈ 1/|D(e^{jθ0})|` 到 ~1.5e6 量级
+  （= 1/(8π²ξ(f0/fs)²)，与上面的状态放大同量级），其 ulp 本身就和输出同量级。
+  系数误差只是病态的一半。
+- **对偶不变量**：`peak_init(f0,ξ,g,fs)` 与 `notch_init(f0,ξ,1/g,fs)` 的 **s 域**
+  系数向量互为精确交换——`src/peak_filter.c` 把分母写成 `2·xi·d·w0`（而非
+  `2·xi·w0/g`）正是为了让两边同形、逐位成立。经各自的 `den_z[0]` 归一化之后，
+  z 域存储系数只到 ~1 ulp（实测 400 组参数、1191 个系数：56% 逐位相同、100% 落在
+  1e-6 相对误差内），所以对偶校验用 1e-6 量级的相对容差，不断言逐位。
+  CSV 层面同样对得上：两族配置表互为倒数，f32 实测 `max|peak·notch − 1| = 2.2e-3`。
 - init 走与 notch 相同的直写 biquad 短路径，栈同为 112 B。
-
-### 文件
-
-| 文件 | 用途 |
-|---|---|
-| `include/biquad_filter.h` | Biquad 公开 API（inline update + 级联核心 cascade_update/reset） |
-| `include/filter_utils.h` | 设计工具 (complex_t, prewarp, 变换, zpk2sos, design_filter, check_cascade_gains) |
-| `include/butter_filter.h` | Butterworth API（X-macro 生成 32 结构体 + inline update/reset） |
-| `include/cheby_filter.h` | Chebyshev I & II API（X-macro 生成 64 结构体 + inline update/reset） |
-| `include/notch_filter.h` | Notch API（单结构体 + inline update/reset；预畸语义与三道闸的文档） |
-| `include/peak_filter.h` | Peak API（与 Notch 同构；H1 形式的来历、d = 1/g 判据、boost 上限的文档） |
-| `src/biquad_filter.c` | Biquad 实现（init, reset, get_output, get_input, c2d_bilinear） |
-| `src/filter_utils.c` | 设计工具实现 + 共享设计管线 design_filter + 增益校验 |
-| `src/butter_filter.c` | 预计算极点表、按阶 init（管线走 design_filter） |
-| `src/cheby_filter.c` | 运行时原型计算、按阶 init（管线走 design_filter） |
-| `src/notch_filter.c` | 参数闸 + f32 数值闸 + 直写 biquad（不走 design_filter） |
-| `src/peak_filter.c` | 同上，判据用 d = 1/g；含 H1 vs H2 的选型理由与 f32 时域标定 |
-| `test/test_biquad.c` | Biquad 测试（含裕量对称性、积分器 reset、NaN 语义） |
-| `test/test_butter.c` | Butterworth 测试（全类型、多阶数 + 全阶扫掠 + 近实配对/窄带回归） |
-| `test/test_cheby.c` | Chebyshev I/II 测试（全类型、多阶数 + 全阶扫掠 + 高 Q 配对回归） |
-| `test/test_notch.c` | Notch 测试（参数闸、数值闸边界、深度/DC/Nyquist、g 上限、reset、f 与 xi 扫掠） |
-| `test/test_peak.c` | 同上镜像 + **对偶不变量**（与 notch_init(1/g) 的系数互为交换）+ 半径闸/数值闸各一档 |
-| `test/test_butter_with_py.c` | 生成 CSV（argv 指定路径 + valid 检查）与 scipy 对比 |
-| `test/test_cheby_with_py.c` | 生成 CSV（argv 指定路径 + valid 检查）与 scipy 对比 |
-| `test/test_notch_with_py.c` | 生成**频响** CSV（25 个相对 f0 的频点 × 4 配置；valid 失败拒绝出表） |
-| `test/test_peak_with_py.c` | 同上，配置表是 notch 表的逐项倒数（g → 1/g），频率网格相同 |
-| `test/test_butter_use_py.py` | Python 参考滤波器（Butterworth，含绘图，argv 指定数据目录） |
-| `test/test_cheby_use_py.py` | Python 参考滤波器（Chebyshev，含绘图，argv 指定数据目录） |
-| `test/test_notch_use_py.py` | Notch f64 参考频响（scipy.signal.bilinear 独立实现 c2d）对拍；无 numpy/scipy 时 exit 77 |
-| `test/test_peak_use_py.py` | Peak f64 参考频响同上；容差按 max\|H_ref\| 归一（峰高到 50，绝对容差无意义） |
-| `test/compare_scipy.py` | 稳态精度对比（已注册 ctest，无 numpy/scipy 时 exit 77 SKIP） |
-| `test/verify_zpk_gain.py` | 验证 float32 精度足够 zpk 增益追踪（独立复现 scipy 管线，f64 vs f32） |
-| `CMakeLists.txt` | 顶层 CMake（库带 -ffunction-sections/-fdata-sections） |
-| `test/CMakeLists.txt` | 测试可执行文件 + CTest 注册（13 项，含 CSV 生成 + scipy 对比 + notch/peak 频响对拍 + zpk 增益精度验证） |

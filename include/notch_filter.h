@@ -97,8 +97,10 @@ typedef struct {
  * @note 实际可用区间是数值闸与 @ref biquad_filter_init 的极点半径裕量
  *       （@f$ 1 - r < 5 \times 10^{-5} @f$，对应
  *       @f$ \xi \cdot (f_0/f_s) > 7.96 \times 10^{-6} @f$）的**交集**。
- *       绝大多数参数下数值闸更紧；只有 @f$ \xi \lesssim 10^{-3} @f$ 时
- *       极点裕量才先触发。两者都 fail-closed，只是被拒的原因不同。
+ *       绝大多数参数下数值闸更紧；只有 @f$ \xi < 0.0125\,g @f$ 时极点裕量才先
+ *       触发（两条边界在 @f$ \xi = 0.0125\,g @f$、
+ *       @f$ \tan(\pi f_0/f_s) = 2 \times 10^{-3}/g @f$ 处相交）。两者都
+ *       fail-closed，只是被拒的原因不同。
  *
  *       实用刻度：@f$ \xi = 0.05 @f$、@f$ g = 0.1 @f$ 时数值闸要求
  *       @f$ f_0/f_s \ge 1.007 \times 10^{-3} @f$，即 48 kHz 下
