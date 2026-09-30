@@ -1,5 +1,7 @@
 build/
 build-*/
 __pycache__/
+docs/superpowers/
+.superpowers/
 *.csv
 .claude/

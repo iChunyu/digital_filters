@@ -6,9 +6,6 @@
 #include "biquad_filter.h"
 #include <math.h>
 
-#include "biquad_filter.h"
-#include <math.h>
-
 /**
  * @brief 三项补偿求和（TwoSum 式）。
  *

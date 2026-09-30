@@ -3,37 +3,37 @@ target_link_libraries(test_biquad PRIVATE digital_filters)
 add_test(NAME test_biquad COMMAND test_biquad)
 
 add_executable(test_butter test_butter.c)
-target_link_libraries(test_butter PRIVATE digital_filters m)
+target_link_libraries(test_butter PRIVATE digital_filters)
 add_test(NAME test_butter COMMAND test_butter)
 
 add_executable(test_cheby test_cheby.c)
-target_link_libraries(test_cheby PRIVATE digital_filters m)
+target_link_libraries(test_cheby PRIVATE digital_filters)
 add_test(NAME test_cheby COMMAND test_cheby)
 
 add_executable(test_notch test_notch.c)
-target_link_libraries(test_notch PRIVATE digital_filters m)
+target_link_libraries(test_notch PRIVATE digital_filters)
 add_test(NAME test_notch COMMAND test_notch)
 
 # test_peak.c 另外包含 notch_filter.h——对偶不变量测试要拿同一组参数的
 # 陷波系数来对照（H_peak(ξ,g) ≡ 1/H_notch(ξ,1/g)）。
 add_executable(test_peak test_peak.c)
-target_link_libraries(test_peak PRIVATE digital_filters m)
+target_link_libraries(test_peak PRIVATE digital_filters)
 add_test(NAME test_peak COMMAND test_peak)
 
 # 与 Python 对比用的可执行文件：生成器把 CSV 写进 build 目录；
 # scipy 对比从**同一个**目录读回，这样源码目录里的陈旧 CSV
 # 永远不会遮蔽新跑出来的结果。
 add_executable(test_butter_with_py test_butter_with_py.c)
-target_link_libraries(test_butter_with_py PRIVATE digital_filters m)
+target_link_libraries(test_butter_with_py PRIVATE digital_filters)
 
 add_executable(test_cheby_with_py test_cheby_with_py.c)
-target_link_libraries(test_cheby_with_py PRIVATE digital_filters m)
+target_link_libraries(test_cheby_with_py PRIVATE digital_filters)
 
 add_executable(test_notch_with_py test_notch_with_py.c)
-target_link_libraries(test_notch_with_py PRIVATE digital_filters m)
+target_link_libraries(test_notch_with_py PRIVATE digital_filters)
 
 add_executable(test_peak_with_py test_peak_with_py.c)
-target_link_libraries(test_peak_with_py PRIVATE digital_filters m)
+target_link_libraries(test_peak_with_py PRIVATE digital_filters)
 
 # 把配套的 Python 脚本拷到可执行文件旁边
 configure_file(test_butter_use_py.py ${CMAKE_CURRENT_BINARY_DIR}/test_butter_use_py.py COPYONLY)
