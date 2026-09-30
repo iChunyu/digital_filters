@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-"""把 Chebyshev 滤波器的 C 输出与 scipy 对比。
+"""把 Chebyshev 滤波器的 C 输出与 scipy 对比，并画图。
 
 用法：
   1. 构建：cmake -B build && cmake --build build
   2. 生成 CSV：./build/test/test_cheby_with_py
   3. 运行本脚本：python3 test/test_cheby_use_py.py
+
+本脚本只画图，**不做断言**（所以没有注册进 CTest）。数值判据在
+compare_scipy.py 里，那条已注册为 scipy_compare——两者不要互相替代。
 """
 
 import os
@@ -22,15 +25,15 @@ ORDER = 7
 INPUT_FREQ = 30.0
 
 FILTER_CONFIGS = [
-    # (标题, scipy_fn, btype, 动态列, 静态列, ripple, fc1, fc2)
-    ("Chebyshev I LP",  signal.cheby1, "lowpass",  "cheby1_lp", "cheby1_lp",  3.0, FC_LP,  None),
-    ("Chebyshev I HP",  signal.cheby1, "highpass", "cheby1_hp", "cheby1_hp",  3.0, FC_HP,  None),
-    ("Chebyshev I BP",  signal.cheby1, "bandpass", "cheby1_bp", "cheby1_bp",  3.0, FC1_BP, FC2_BP),
-    ("Chebyshev I BS",  signal.cheby1, "bandstop", "cheby1_bs", "cheby1_bs",  3.0, FC1_BP, FC2_BP),
-    ("Chebyshev II LP", signal.cheby2, "lowpass",  "cheby2_lp", "cheby2_lp", 40.0, FC_LP,  None),
-    ("Chebyshev II HP", signal.cheby2, "highpass", "cheby2_hp", "cheby2_hp", 40.0, FC_HP,  None),
-    ("Chebyshev II BP", signal.cheby2, "bandpass", "cheby2_bp", "cheby2_bp", 40.0, FC1_BP, FC2_BP),
-    ("Chebyshev II BS", signal.cheby2, "bandstop", "cheby2_bs", "cheby2_bs", 40.0, FC1_BP, FC2_BP),
+    # (标题, scipy_fn, btype, CSV 列, ripple, fc1, fc2)
+    ("Chebyshev I LP",  signal.cheby1, "lowpass",  "cheby1_lp",  3.0, FC_LP,  None),
+    ("Chebyshev I HP",  signal.cheby1, "highpass", "cheby1_hp",  3.0, FC_HP,  None),
+    ("Chebyshev I BP",  signal.cheby1, "bandpass", "cheby1_bp",  3.0, FC1_BP, FC2_BP),
+    ("Chebyshev I BS",  signal.cheby1, "bandstop", "cheby1_bs",  3.0, FC1_BP, FC2_BP),
+    ("Chebyshev II LP", signal.cheby2, "lowpass",  "cheby2_lp", 40.0, FC_LP,  None),
+    ("Chebyshev II HP", signal.cheby2, "highpass", "cheby2_hp", 40.0, FC_HP,  None),
+    ("Chebyshev II BP", signal.cheby2, "bandpass", "cheby2_bp", 40.0, FC1_BP, FC2_BP),
+    ("Chebyshev II BS", signal.cheby2, "bandstop", "cheby2_bs", 40.0, FC1_BP, FC2_BP),
 ]
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -58,7 +61,7 @@ def main():
     t = data["timestamp"]
     x = data["input"]
 
-    for title, scipy_fn, btype, dyn_col, sta_col, ripple, fc1, fc2 in FILTER_CONFIGS:
+    for title, scipy_fn, btype, c_col, ripple, fc1, fc2 in FILTER_CONFIGS:
         if fc2 is None:
             sos = scipy_fn(ORDER, ripple, fc1, btype=btype, fs=FS, output="sos")
         else:
@@ -66,16 +69,14 @@ def main():
 
         scipy_out = signal.sosfilt(sos, x)
 
-        c_dyn = data[dyn_col]
-        c_sta = data[sta_col]
+        c_out = data[c_col]
 
         family = scipy_fn.__name__
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 7), sharex=True)
         fig.suptitle(f"{title}  (N={ORDER}, ripple={ripple} dB, fs={FS} Hz, input={INPUT_FREQ} Hz)")
 
         ax1.plot(t, x, label="input", color="gray", alpha=0.5)
-        ax1.plot(t, c_dyn, label=f"{family}_t", linestyle="--")
-        ax1.plot(t, c_sta, label=f"static_{family}_7th_t", linestyle=":")
+        ax1.plot(t, c_out, label=f"C: {c_col}", linestyle="--")
         ax1.plot(t, scipy_out, label=f"scipy.signal.{family}", linestyle="-.")
         ax1.set_ylabel("Amplitude")
         ax1.legend(loc="best")
@@ -85,17 +86,14 @@ def main():
         n_zoom = min(100, len(t))
         ax1_ins = ax1.inset_axes([0.55, 0.55, 0.40, 0.40])
         ax1_ins.plot(t[-n_zoom:], x[-n_zoom:], color="gray", alpha=0.5)
-        ax1_ins.plot(t[-n_zoom:], c_dyn[-n_zoom:], linestyle="--")
-        ax1_ins.plot(t[-n_zoom:], c_sta[-n_zoom:], linestyle=":")
+        ax1_ins.plot(t[-n_zoom:], c_out[-n_zoom:], linestyle="--")
         ax1_ins.plot(t[-n_zoom:], scipy_out[-n_zoom:], linestyle="-.")
         ax1_ins.set_title(f"Last {n_zoom} points", fontsize=7)
         ax1_ins.tick_params(labelsize=6)
         ax1_ins.grid(True, alpha=0.3)
 
-        err_dyn = c_dyn - scipy_out
-        err_sta = c_sta - scipy_out
-        ax2.plot(t, err_dyn, label=f"{family}_t − scipy", linestyle="--")
-        ax2.plot(t, err_sta, label=f"static_{family}_7th_t − scipy", linestyle=":")
+        err = c_out - scipy_out
+        ax2.plot(t, err, label=f"{c_col} − scipy", linestyle="--")
         ax2.set_xlabel("Time (s)")
         ax2.set_ylabel("Error")
         ax2.legend(loc="best")
@@ -103,8 +101,7 @@ def main():
 
         # 局部放大图：最后 100 个点的误差
         ax2_ins = ax2.inset_axes([0.55, 0.55, 0.40, 0.40])
-        ax2_ins.plot(t[-n_zoom:], err_dyn[-n_zoom:], linestyle="--")
-        ax2_ins.plot(t[-n_zoom:], err_sta[-n_zoom:], linestyle=":")
+        ax2_ins.plot(t[-n_zoom:], err[-n_zoom:], linestyle="--")
         ax2_ins.set_title(f"Last {n_zoom} points", fontsize=7)
         ax2_ins.tick_params(labelsize=6)
         ax2_ins.grid(True, alpha=0.3)

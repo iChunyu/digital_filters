@@ -2,20 +2,34 @@
  * @file    biquad_filter.h
  * @brief   二阶 IIR 滤波器（直接 II 型／规范型）。
  *
- * 实现离散传递函数：
  * @f[
  *   H(z) = \frac{b_0 + b_1 z^{-1} + b_2 z^{-2}}
  *                {1   + a_1 z^{-1} + a_2 z^{-2}}
  * @f]
  *
- * 规范型直接 II 型仅用 3 个状态变量（@p w[0..2]），
- * 是二阶节最省内存的实现形式。
+ * 直接 II 型（规范型）只用 3 个状态变量 @p w[0..2]，是二阶节最省内存的形式。
  */
 
 #ifndef BIQUAD_FILTER_H_
 #define BIQUAD_FILTER_H_
 
 #include <stdint.h>
+
+/*
+ * fail-closed 的前提：isfinite 不能被编译器折叠成恒真。`-ffast-math` 隐含
+ * `-ffinite-math-only`，编译器据此假设不存在 NaN/Inf，于是全部有限性闸静默
+ * 失效（退化设计被当作 valid=1 部署出去）；重结合还会破坏 sum3f 与 Dekker
+ * 分裂的误差无损性。实测细节与修复口径见 AGENTS.md 的「禁止 -ffast-math」段。
+ *
+ * 本头是六个公开头的唯一公共顶点（其余五族全部包含它），守卫放这一处即覆盖
+ * 全部 translation unit。
+ */
+#if defined(__FAST_MATH__)
+#error "本库要求 IEEE-754 严格语义（fail-closed 依赖 isfinite）：请移除 -ffast-math"
+#endif
+#if defined(__FINITE_MATH_ONLY__) && (__FINITE_MATH_ONLY__ > 0)
+#error "本库要求 IEEE-754 严格语义（fail-closed 依赖 isfinite）：请移除 -ffinite-math-only"
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -48,17 +62,9 @@ typedef struct {
 /**
  * @brief 用双线性变换把 s 域 biquad 系数映射到 z 域。
  *
- * 把连续传递函数
- * @f[
- *   H(s) = \frac{B_0 + B_1 s + B_2 s^2}
- *                {A_0 + A_1 s + A_2 s^2}
- * @f]
- * 通过代换 @f$ s = 2 f_s \frac{1 - z^{-1}}{1 + z^{-1}} @f$
- * 映射到离散等价形式
- * @f[
- *   H(z) = \frac{b_0 + b_1 z^{-1} + b_2 z^{-2}}
- *                {a_0 + a_1 z^{-1} + a_2 z^{-2}}
- * @f]
+ * 代换 @f$ s = 2 f_s \frac{1 - z^{-1}}{1 + z^{-1}} @f$，作用于
+ * @f$ H(s) = \frac{B_0 + B_1 s + B_2 s^2}{A_0 + A_1 s + A_2 s^2} @f$；
+ * 输出的 @p den_z 未归一化（@p den_z[0] 未必为 1）。
  *
  * @param[out] num_z  得到的 z 域分子   [b0, b1, b2]。
  * @param[out] den_z  得到的 z 域分母   [a0, a1, a2]。
@@ -82,14 +88,12 @@ void biquad_filter_set_empty(biquad_filter_t *filter);
 /**
  * @brief 用给定的 z 域系数初始化 biquad 滤波器。
  *
- * 系数归一化使 @p den_z[0] 变为 1.0。以下任一情形成立时，滤波器
- * 被静默替换为单位直通（恒等）并返回 0——宁可直通也不要发散：
+ * 系数归一化使 @p den_z[0] 变为 1.0。以下任一情形成立时，滤波器被静默替换为
+ * 单位直通（恒等）并返回 0——宁可直通也不要发散：
  * - @p den_z[0] 为零或非有限；
  * - 任一系数非有限；
  * - 极点落在单位圆外（不稳定，Jury 三条件）；
- * - 任一极点半径超过 0.99995（1 − r < 5e-5，振铃 ≥ 10⁴ 样本：
- *   共轭对看 |a2| > 0.9999，一阶节看 |a1| > 0.99995，不等实根对
- *   用通用求根公式）。
+ * - 任一极点半径 > 0.99995（1 − r < 5e-5，会振铃 ≥ 10⁴ 样本）。
  *
  * @param[out] filter  滤波器对象指针。
  * @param[in]  num_z   z 域分子系数   [b0, b1, b2]。
@@ -102,15 +106,12 @@ uint8_t biquad_filter_init(biquad_filter_t *filter, const float num_z[3],
 /**
  * @brief 处理一个输入样本并返回滤波输出。
  *
- * 内部状态前进一个时间步。
+ * static inline（header-only）：输出计算与状态更新融合，@p w[] 只装载一次，
+ * 消除 MCU 上每节的函数调用开销。
  *
- * 以 static inline（header-only）定义，消除资源受限 MCU 上每节
- * 函数调用开销；输出计算与状态更新融合，@p w[] 只装载一次。
- *
- * @note 非有限输入（NaN/Inf）会毒化状态向量，此后每个输出都为
- *       非有限值，直到 reset 恢复。这里刻意不做防护——MCU 热路径
- *       上每样本的分支开销不可接受。接入不可信或传感器数据的
- *       调用方应在源头清洗。
+ * @note 热路径刻意不做 NaN/Inf 防护（每样本分支开销）：非有限输入毒化状态直至
+ *       reset，调用方应在源头清洗。**不可重入**：同一对象被 ISR 与主循环共享时
+ *       需自行关中断或双缓冲（或让 ISR 只置标志、主循环统一推状态）。
  *
  * @param[in,out] filter  滤波器对象指针。
  * @param[in]     input   当前输入样本。
@@ -167,7 +168,8 @@ float biquad_filter_get_input(const biquad_filter_t *filter);
  *
  * @note 若 @f$ 1 + a_1 + a_2 = 0 @f$（如纯积分器），稳态无定义，
  *       此时状态强制清零。非有限的 @p equilibrium 同样把状态强制
- *       清零，而不是用 NaN 毒化。
+ *       清零，而不是用 NaN 毒化。@f$ 1 + a_1 + a_2 @f$ 小到让
+ *       @f$ w_{ss} = x/(1+a_1+a_2) @f$ 溢出成非有限值时，同样清零。
  *
  * @param[in,out] filter       滤波器对象指针。
  * @param[in]     equilibrium  稳态常值输入。

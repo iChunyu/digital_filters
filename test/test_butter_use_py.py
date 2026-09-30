@@ -6,6 +6,9 @@
   2. 运行：python3 test/test_butter_use_py.py build/test
      （传入存放 C 生成器可执行文件与 CSV 的目录；
        默认为本脚本所在目录）
+
+本脚本只画图，**不做断言**（所以没有注册进 CTest）。数值判据在
+compare_scipy.py 里，那条已注册为 scipy_compare——两者不要互相替代。
 """
 
 import os
@@ -23,10 +26,10 @@ ORDER = 7
 INPUT_FREQ = 30.0
 
 FILTER_CONFIGS = [
-    ("LP", "lowpass", "butter_lp", "butter_lp", FC_LP, None),
-    ("HP", "highpass", "butter_hp", "butter_hp", FC_HP, None),
-    ("BP", "bandpass", "butter_bp", "butter_bp", FC1_BP, FC2_BP),
-    ("BS", "bandstop", "butter_bs", "butter_bs", FC1_BP, FC2_BP),
+    ("LP", "lowpass", "butter_lp", FC_LP, None),
+    ("HP", "highpass", "butter_hp", FC_HP, None),
+    ("BP", "bandpass", "butter_bp", FC1_BP, FC2_BP),
+    ("BS", "bandstop", "butter_bs", FC1_BP, FC2_BP),
 ]
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -54,7 +57,7 @@ def main():
     t = data["timestamp"]
     x = data["input"]
 
-    for label, btype, dyn_col, sta_col, fc1, fc2 in FILTER_CONFIGS:
+    for label, btype, c_col, fc1, fc2 in FILTER_CONFIGS:
         if fc2 is None:
             sos = signal.butter(ORDER, fc1, btype=btype, fs=FS, output="sos")
         else:
@@ -62,15 +65,13 @@ def main():
 
         scipy_out = signal.sosfilt(sos, x)
 
-        c_dyn = data[dyn_col]
-        c_sta = data[sta_col]
+        c_out = data[c_col]
 
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 7), sharex=True)
         fig.suptitle(f"Butterworth {label}  (N={ORDER}, fs={FS} Hz, input={INPUT_FREQ} Hz)")
 
         ax1.plot(t, x, label="input", color="gray", alpha=0.5)
-        ax1.plot(t, c_dyn, label="butter_t", linestyle="--")
-        ax1.plot(t, c_sta, label="butter_7th_t", linestyle=":")
+        ax1.plot(t, c_out, label=f"C: {c_col}", linestyle="--")
         ax1.plot(t, scipy_out, label="scipy.signal.butter", linestyle="-.")
         ax1.set_ylabel("Amplitude")
         ax1.legend(loc="best")
@@ -80,17 +81,14 @@ def main():
         n_zoom = min(100, len(t))
         ax1_ins = ax1.inset_axes([0.55, 0.55, 0.40, 0.40])
         ax1_ins.plot(t[-n_zoom:], x[-n_zoom:], color="gray", alpha=0.5)
-        ax1_ins.plot(t[-n_zoom:], c_dyn[-n_zoom:], linestyle="--")
-        ax1_ins.plot(t[-n_zoom:], c_sta[-n_zoom:], linestyle=":")
+        ax1_ins.plot(t[-n_zoom:], c_out[-n_zoom:], linestyle="--")
         ax1_ins.plot(t[-n_zoom:], scipy_out[-n_zoom:], linestyle="-.")
         ax1_ins.set_title(f"Last {n_zoom} points", fontsize=7)
         ax1_ins.tick_params(labelsize=6)
         ax1_ins.grid(True, alpha=0.3)
 
-        err_dyn = c_dyn - scipy_out
-        err_sta = c_sta - scipy_out
-        ax2.plot(t, err_dyn, label="butter_t − scipy", linestyle="--")
-        ax2.plot(t, err_sta, label="butter_7th_t − scipy", linestyle=":")
+        err = c_out - scipy_out
+        ax2.plot(t, err, label=f"{c_col} − scipy", linestyle="--")
         ax2.set_xlabel("Time (s)")
         ax2.set_ylabel("Error")
         ax2.legend(loc="best")
@@ -98,8 +96,7 @@ def main():
 
         # 局部放大图：最后 100 个点的误差
         ax2_ins = ax2.inset_axes([0.55, 0.55, 0.40, 0.40])
-        ax2_ins.plot(t[-n_zoom:], err_dyn[-n_zoom:], linestyle="--")
-        ax2_ins.plot(t[-n_zoom:], err_sta[-n_zoom:], linestyle=":")
+        ax2_ins.plot(t[-n_zoom:], err[-n_zoom:], linestyle="--")
         ax2_ins.set_title(f"Last {n_zoom} points", fontsize=7)
         ax2_ins.tick_params(labelsize=6)
         ax2_ins.grid(True, alpha=0.3)

@@ -106,6 +106,19 @@ static float peak_nyq_gain(const peak_filter_t *f)
  * @param[in] g   线性峰值增益（> 1）。
  * @param[in] fs  采样频率（Hz）。
  */
+/* 单节的 DC / Nyquist 增益（精确有理求值，无采样、无三角）。 */
+static float section_dc_gain(const biquad_filter_t *s)
+{
+    return (s->num_z[0] + s->num_z[1] + s->num_z[2])
+         / (1.0f + s->den_z[1] + s->den_z[2]);
+}
+
+static float section_nyq_gain(const biquad_filter_t *s)
+{
+    return (s->num_z[0] - s->num_z[1] + s->num_z[2])
+         / (1.0f - s->den_z[1] + s->den_z[2]);
+}
+
 static void check_duality(float f0, float xi, float g, float fs)
 {
     peak_filter_t p;
@@ -121,18 +134,30 @@ static void check_duality(float f0, float xi, float g, float fs)
     if (!p.valid || !n.valid) return;
 
     const float scale = 1.0f / n.sections[0].num_z[0];
-    /* 系数都在 O(1) 量级，绝对容差 2e-5 ≈ 1e-5 相对——两条归一化除法
-       各自舍入一次的余量（实测偏差 ~1e-7，留了约 100 倍）。 */
+    /* s 域系数向量互为精确交换（peak_filter.c 把分母写成 2·xi·d·w0 就是为了
+       这一点）；到 z 域后各过了一次归一化除法，所以只能逐项接近而不是逐位
+       相等。实测偏差 ~1e-7（即两条归一化除法各舍入一次的尺度），1e-6 留了
+       约 10 倍余量，同时比原先的 2e-5 紧 20 倍——“逐位同形”的说法由这里钉住。 */
     for (int i = 0; i < 3; i++) {
-        CHECK(CLOSE(p.sections[0].num_z[i], n.sections[0].den_z[i] * scale, 2e-5f),
+        CHECK(CLOSE(p.sections[0].num_z[i], n.sections[0].den_z[i] * scale, 1e-6f),
               "duality: peak num == notch den (scaled)");
-        CHECK(CLOSE(p.sections[0].den_z[i], n.sections[0].num_z[i] * scale, 2e-5f),
+        CHECK(CLOSE(p.sections[0].den_z[i], n.sections[0].num_z[i] * scale, 1e-6f),
               "duality: peak den == notch num (scaled)");
     }
 
-    /* 直流/奈奎斯特两端同样互为倒数，且都精确等于 1（结构保证）。 */
-    CHECK(CLOSE(peak_dc_gain(&p) * (1.0f / peak_dc_gain(&p)), 1.0f, 1e-3f),
-          "duality: sanity");
+    /* 两端增益：两个滤波器各自都精确等于 1（结构保证：b1 == a1 且
+       b0 - 1 == -(b2 - a2)，z = ±1 处逐项相消）。注意**两者的乘积**恒为 1，
+       写成 `g * (1/g) == 1` 那种断言是对着任何有限非零值都成立的同义反复，
+       不能证明对偶；真正的内容在上面那个系数交换循环里，这里只把两端各自的
+       归一化钉住（归一化写错时它会红）。 */
+    CHECK(CLOSE(section_dc_gain(&p.sections[0]), 1.0f, 1e-4f),
+          "duality: peak DC gain = 1");
+    CHECK(CLOSE(section_dc_gain(&n.sections[0]), 1.0f, 1e-4f),
+          "duality: notch DC gain = 1");
+    CHECK(CLOSE(section_nyq_gain(&p.sections[0]), 1.0f, 1e-4f),
+          "duality: peak Nyquist gain = 1");
+    CHECK(CLOSE(section_nyq_gain(&n.sections[0]), 1.0f, 1e-4f),
+          "duality: notch Nyquist gain = 1");
 }
 
 /* 峰值测量需要的样本数：极点阻尼 ζ = ξ·d，衰减时间常数
@@ -230,6 +255,25 @@ int main(void)
      * 时先触发），所以它的实际可用上限主要由极点半径决定——这正是
      * include/peak_filter.h 里 g ≤ 4e4·ξ·tan(πf0/fs) 那条刻度的来历。
      */
+
+    /*
+     * 阈值标定（f32 系数 + f32 状态递推的 DF-II 时域仿真，与
+     * biquad_filter_update 同结构；每个 fs 扫 f0 的 ±1% 邻域取最坏——孤立点会
+     * 因舍入运气给出乐观值，同 test_notch.c 的告诫）。f0 = 20 Hz、ξ = 0.05、
+     * g = 10：
+     *
+     *     fs = 1 kHz    比值误差 < 3e-5     实测 10 ~ 10
+     *     fs = 8 kHz    2.8e-4            实测 9.997 ~ 10
+     *     fs = 48 kHz   0.289             实测 7.113 ~ 11.06（半径闸拒绝）
+     *
+     * 镜像核对：同点 g = 0.1 的陷波深度实测 0.126 ~ 0.166（理想 0.1，最坏 66%），
+     * 与上面 29% 是互为倒数的同一个病态。
+     *
+     * **不要用「f32 系数 + f64 解析求值」标定**：那个口径在 f0 = 20 Hz、
+     * fs = 48 kHz 上给陷波与 boost 各 0.4% 的误差，比真实值低估两个数量级——
+     * 它忽略了 f32 状态舍入，而这里的状态 |w| ≈ 1/|D(e^{jθ0})| 会到 1e7 量级，
+     * 其 ulp 本身就和输出同量级。系数误差只是病态的一半，另一半在状态里。
+     */
     const float xi_q = 0.5f;
 
     /* f0=0.40Hz @ fs=1kHz：Q = 0.5*0.1*(2π*0.4/2000)^2 = 7.90e-8 > 5e-8；
@@ -255,6 +299,18 @@ int main(void)
      * 反直觉但有物理意义：Q 与 d = 1/g 成正比，所以同样的 f0 下
      * **高** boost（g 大、d 小）反而更容易被拒。与 notch 的
      * "浅陷波反而更容易过闸" 正好互为镜像。
+     *
+     * 判据为什么必须用 d 而不是 g：由对偶不变量 H1(ξ,g) ≡ 1/H2(ξ,1/g)，
+     * "g 的 boost 有多难做"与"d 的陷波有多难做"是同一个问题。写成
+     * Q = ξ·g·(ω0/K)² 会把闸门随增益放大约 g² 倍——同一个病态 boost 被放行，
+     * 而它的镜像陷波被同一个阈值拒掉。下面的 qrej 档就是被错误口径误放行的
+     * 那一类（Q=3.87e-8、半径裕量 8.8e-5 放行）。
+     *
+     * 两条闸的对比依据（以 r = tan(πf0/fs) 计）：数值闸 r_q = √(5e-8/(ξd))，
+     * 半径闸 r_r = 2.5e-5/(ξd)；r_q > r_r ⟺ ξd > 0.0125，只有这时数值闸才是
+     * 先触发的那道。ξd < 0.0125 时半径闸先触发，所以峰值族的实际可用上限主要
+     * 由极点半径决定，即 g ≤ 4e4·ξ·tan(πf0/fs)。这与 notch 相反——notch 的极点
+     * 阻尼是 ξ（与 g 无关），数值闸在绡大多数参数下更紧。
      *
      * f0=0.42Hz、ξ=0.5：Q = 8.705e-7/g，在 g ≈ 17.4 处跨过 5e-8；
      * 半径闸的边界是 g ≤ 26.4。取 g=13（两道闸都过）与 g=22

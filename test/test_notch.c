@@ -174,6 +174,32 @@ int main(void)
 
     /* ── 数值闸边界：Q = xi*g*(w0/K)^2 跨过 5e-8 ──────────────────────── */
 
+    /*
+     * 阈值标定（Q = ξ·g·(ω0/K)²；f32 下实测 深度/目标深度 的**邻域最坏值**，
+     * 每个标定点扫 400 个 ±1% 内的邻近 f0，fs = 48 kHz）：
+     *
+     *     Q = 2e-9  最坏 12.1x      Q = 5e-8  最坏 1.17x
+     *     Q = 5e-9  最坏  3.50x     Q = 1e-7  最坏 1.04x
+     *     Q = 1e-8  最坏  2.79x     Q = 2e-7  最坏 1.011x
+     *     Q = 2e-8  最坏  1.95x     Q = 1e-6  最坏 1.0006x
+     *
+     * 不同 (ξ, g) 组合凑到同一 Q 时最坏值有约 ±50% 的散布（Q = 5e-8 时实测
+     * 1.12~1.19），Q 越大散布越小，故阈值取 5e-8：闸内跨全部实测组合深度误差
+     * < 20%。
+     *
+     * 标定必须在邻域上取最坏，不能采孤立点：失效在 0.002 Hz 尺度上剧烈震荡
+     * ——f0 = 19.95~20.05 Hz（fs = 48 kHz、ξ = 0.05、g = 0.1）区间内比值在
+     * 1.04~3.04 之间随机跳，相邻 0.002 Hz 步长给出 1.28 → 2.73 → 1.40。那些
+     * "好"的值只是舍入运气好；按孤立点标定会得出一个乐观 25~50 倍的阈值。
+     *
+     * 范围界定：本库不负责修复、补偿或消除 f32 系数量化误差——那是数值类型的
+     * 固有代价。这道闸不试图修好什么，只是不在明知会失真时还点头；接受深度失
+     * 真的调用方可以绕过它，直接用 biquad_c2d_bilinear 自己造系数。
+     *
+     * 上面的邻域标定现在是可重跑的断言（见本文件末尾的 calibration 段）：
+     * 实测邻域最坏 1.1321，落在 Q = 5e-8 那一档的 1.12~1.19 区间内。
+     */
+
     /* f0=1.2Hz @ fs=1kHz：Q = 0.05*0.1*(2π*1.2/2000)^2 = 7.11e-8 > 5e-8 */
     notch_filter_t gpass;
     gpass.valid = 0;
@@ -208,6 +234,50 @@ int main(void)
     CHECK(gdeep.num_sections == 0, "gate: rejected → num_sections cleared");
 
     /* ── g 上限：浅到等同不陷波 → 直通 ────────────────────────────────── */
+
+    /* ── 回归：把上面那段邻域标定变成可重跑的测试 ──────────────────
+       上面"每个标定点扫 400 个 ±1% 内的邻近 f0"、"闸内深度误差 < 20%"
+       此前只是散文：仓库里没有任何代码能重跑它，也没有断言引用那些数字。
+       这里把它变成回归——只写在注释里的标定会随代码演进而惄惄失效。
+
+       测试点选在刚进闸内（ Q = ξ·g·tan²(πf0/fs) ≈ 5.35e-8，阈值 5e-8），
+       因为那里是标定散布最大、最容易被破坏的一档。扫 400 点是必需的：
+       失效在 0.002 Hz 尺度上震荡（见上面的告诫），粗网格会漏掉最坏值。 */
+    {
+        const float cal_f0 = 50.0f, cal_fs = 48000.0f;
+        const float cal_xi = 0.05f, cal_g = 0.1f;
+        const int cal_pts = 400;
+        /* ζ = ξ（notch 的分母阻尼与 g 无关），τ ≈ fs/(ξ·2πf0) ≈ 3.1e3 样本。
+           4e4 样本让末四分之一窗（1e4 ≈ 3.3τ）起点的瞬态残差降到 e^-9.8，
+           远低于要分辨的 0.1 深度。 */
+        const int cal_steps = 40000;
+        float worst = 0.0f;
+
+        for (int i = 0; i < cal_pts; i++) {
+            float f0 = cal_f0 * (1.0f + 0.01f * (2.0f * (float)i / (float)(cal_pts - 1) - 1.0f));
+            notch_filter_t cn;
+            cn.valid = 0;
+            notch_init(&cn, f0, cal_xi, cal_g, cal_fs);
+            CHECK(cn.valid == 1, "calibration: in-gate design deploys");
+            if (!cn.valid) continue;
+            float ratio = measure_notch_gain(&cn, f0, cal_steps) / cal_g;
+            if (ratio > worst) worst = ratio;
+        }
+        fprintf(stderr, "  [calibration] neighborhood worst depth ratio = %.4f\n", (double)worst);
+        CHECK(worst < 1.2f,
+              "calibration: in-gate neighborhood worst depth error < 20%");
+
+        /* 闸外一侧测不到“失真有多严重”：那些参数会被 notch_init 拒绝，
+           而被拒的参数上求 |H(jω0)| 本身就是那个病态运算（见 notch_filter.c
+           文件头）。这里只钉住 fail-closed 这一半——闸确实把它们拒了。 */
+        notch_filter_t cout;
+        cout.valid = 1;
+        cout.num_sections = 9;
+        notch_init(&cout, cal_f0 * 0.6f, cal_xi, cal_g, cal_fs);  /* Q ≈ 1.9e-8 */
+        CHECK(cout.valid == 0, "calibration: out-of-gate design rejected");
+        CHECK(cout.num_sections == 0,
+              "calibration: out-of-gate rejection clears num_sections");
+    }
 
     notch_filter_t g1;
     g1.valid = 1;

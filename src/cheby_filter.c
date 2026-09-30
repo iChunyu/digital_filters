@@ -38,13 +38,12 @@ static void cheby1_proto(complex_t *poles, uint8_t n, float epsilon)
  * 极点为 Chebyshev I 极点的倒数（conj(p1) / |p1|²）；
  * 零点 z_k = j / sin(θ_k)。
  *
- * @note 跳过 sin(θ) ≈ 0 的 θ（奇数阶该零点位于 s = ∞，不输出）。
- *       合法零点在 θ = π ± π/N 或更远处，|sin(θ)| ≥ sin(π/8)
- *       ≈ 0.38，比阈值高三个数量级。阈值只需吞掉 θ = π_float 处
- *       sinf 的求值误差：glibc 给 ~8.7e-8，软浮点 libm 差 2 ulp
- *       就会输出 j·1e7 的幻影零点，静默重塑响应（实测级联
- *       DC 增益 1.0 → 0.9998）。1e-4 给 libm 误差留三个数量级
- *       余量，同时远低于任何合法零点。
+ * @note 跳过 sin(θ) ≈ 0 的 θ（奇数阶该零点位于 s = ∞，不输出）。阈值 1e-4 只需
+ *       吞掉 θ = π 处 sinf 的求值误差；本库阶数上限 n = 8 时最接近 π 的合法 θ
+ *       给出 |sin θ| = sin(π/(2n)) ≥ sin(π/16) ≈ 0.195，仍有约 1950 倍余量
+ *       （注意不是 sin(π/8) ≈ 0.38——那是个不在最小处取的偏大值）。它同时兜住
+ *       软浮点 libm 的求值误差：那种误差会输出 j·1e7 量级的幻影零点、静默重塑
+ *       响应——回归由 test_cheby.c 的 cheby2 sweep 段（DC/Nyquist 窗口）覆盖。
  *
  * @param[out] poles    输出极点数组（n 个）。
  * @param[out] zeros    输出零点数组（最多 n 个）。
@@ -82,9 +81,6 @@ static uint8_t cheby2_proto(complex_t *poles, complex_t *zeros, uint8_t n,
     return nz;
 }
 
-/* ================================================================== */
-/*  各类型 init 辅助函数                                               */
-/* ================================================================== */
 
 /*
  * 各族 / 类型 / 阶数奇偶的期望 DC/Nyquist 增益（与 scipy 核对）：
@@ -118,27 +114,31 @@ static float cheby2_edge_gain(uint8_t order, float ripple_db)
 
 /* ── Chebyshev I ──────────────────────────────────────────────────── */
 
-/**
- * @brief Chebyshev I 低通设计：原型 → 管线 → 增益校验。
+/* ================================================================== */
+/*  各类型设计辅助（static；公开 API 见 include/cheby_filter.h）         */
+/* ================================================================== */
+/*
+ * 签名：cheby{1,2}_{lp,hp,bp,bs}_init(sections, max_sections, order, ...,
+ *       ripple_db)
+ * 流程：运行时算原型 → 共享管线 design_filter → 级联增益校验。参数越界
+ * （order 不在 1..8、ripple_db ≤ 0、频率不满足约束）或任一校验失败返回 0，由
+ * X-macro 宏体负责把 valid / num_sections 清零。
  *
- * 参数越界（order 不在 1..8、fc 不在 (0, fs/2)、ripple_db ≤ 0）
- * 或校验失败返回 0（调用方部署直通）。
- * 期望级联增益：DC 1（奇数阶）或 10^(−rp/20)（偶数阶），Nyquist 0。
- *
- * @param[out] sections      biquad 节数组。
- * @param[in]  max_sections  sections 容量。
- * @param[in]  order         原型阶数。
- * @param[in]  fc            截止频率（Hz）。
- * @param[in]  fs            采样频率（Hz）。
- * @param[in]  ripple_db     通带纹波（dB）。
- * @return                   部署的节数，0 表示失败。
+ * 期望的边缘增益随奇偶阶不同（cheby1 偶数阶 DC/边缘是 10^(−rp/20)，cheby2 偶数阶
+ * 对应 10^(−rs/20)）——**这正是 check_cascade_gains 需要 ±0.25 纹波档的理由**。
+ * 各类型的期望值见下方每个辅助函数上的一行注释；标定与档位见 test/test_cheby.c。
  */
+
+/* cheby1 低通：DC 1（奇）/ 10^(−rp/20)（偶），Nyquist 0 */
 static uint8_t cheby1_lp_init(biquad_filter_t *sections,
                                       uint8_t max_sections,
                                       uint8_t order, float fc, float fs,
                                       float ripple_db)
 {
-    if (order == 0 || order > 8 || fc <= 0.0f || fc >= fs * 0.5f || ripple_db <= 0.0f)
+    /* 入口闸一律写 !(x > 0) 而不是 x <= 0：后者与 NaN 比较恒假，会把 NaN 放行。
+       本文件 4 处入口闸同此写法（含 ripple_db）。 */
+    if (order == 0 || order > 8 || !(fc > 0.0f) || !(fc < fs * 0.5f)
+        || !(ripple_db > 0.0f))
         return 0;
 
     float epsilon = sqrtf(powf(10.0f, ripple_db / 10.0f) - 1.0f);
@@ -161,26 +161,14 @@ static uint8_t cheby1_lp_init(biquad_filter_t *sections,
     return n;
 }
 
-/**
- * @brief Chebyshev I 高通设计：原型 → 管线 → 增益校验。
- *
- * 失败返回 0（调用方部署直通）。
- * 期望级联增益：DC 0，Nyquist 1（奇数阶）或 10^(−rp/20)（偶数阶）。
- *
- * @param[out] sections      biquad 节数组。
- * @param[in]  max_sections  sections 容量。
- * @param[in]  order         原型阶数。
- * @param[in]  fc            截止频率（Hz）。
- * @param[in]  fs            采样频率（Hz）。
- * @param[in]  ripple_db     通带纹波（dB）。
- * @return                   部署的节数，0 表示失败。
- */
+/* cheby1 高通：DC 0，Nyquist 1（奇）/ 10^(−rp/20)（偶） */
 static uint8_t cheby1_hp_init(biquad_filter_t *sections,
                                       uint8_t max_sections,
                                       uint8_t order, float fc, float fs,
                                       float ripple_db)
 {
-    if (order == 0 || order > 8 || fc <= 0.0f || fc >= fs * 0.5f || ripple_db <= 0.0f)
+    if (order == 0 || order > 8 || !(fc > 0.0f) || !(fc < fs * 0.5f)
+        || !(ripple_db > 0.0f))
         return 0;
 
     float epsilon = sqrtf(powf(10.0f, ripple_db / 10.0f) - 1.0f);
@@ -203,30 +191,17 @@ static uint8_t cheby1_hp_init(biquad_filter_t *sections,
     return n;
 }
 
-/**
- * @brief Chebyshev I 带通设计：原型 → 管线 → 增益校验。
- *
- * 失败返回 0（调用方部署直通）。
- * 期望级联增益：DC 与 Nyquist 均为 0。
- *
- * @param[out] sections      biquad 节数组。
- * @param[in]  max_sections  sections 容量。
- * @param[in]  order         原型阶数。
- * @param[in]  fc1           下带边（Hz）。
- * @param[in]  fc2           上带边（Hz）。
- * @param[in]  fs            采样频率（Hz）。
- * @param[in]  ripple_db     通带纹波（dB）。
- * @return                   部署的节数，0 表示失败。
- */
+/* cheby1 带通：DC 0，Nyquist 0（奇）/ 10^(−rp/20)（偶） */
 static uint8_t cheby1_bp_init(biquad_filter_t *sections,
                                       uint8_t max_sections,
                                       uint8_t order,
                                       float fc1, float fc2, float fs,
                                       float ripple_db)
 {
-    if (order == 0 || order > 8 || fc1 <= 0.0f || fc1 >= fs * 0.5f || ripple_db <= 0.0f)
+    if (order == 0 || order > 8 || !(fc1 > 0.0f) || !(fc1 < fs * 0.5f)
+        || !(ripple_db > 0.0f))
         return 0;
-    if (fc2 <= fc1 || fc2 >= fs * 0.5f) return 0;
+    if (!(fc2 > fc1) || !(fc2 < fs * 0.5f)) return 0;
 
     float epsilon = sqrtf(powf(10.0f, ripple_db / 10.0f) - 1.0f);
     float wc1 = 2.0f * (float)M_PI * prewarp(fc1, fs);
@@ -248,31 +223,17 @@ static uint8_t cheby1_bp_init(biquad_filter_t *sections,
     return n;
 }
 
-/**
- * @brief Chebyshev I 带阻设计：原型 → 管线 → 增益校验。
- *
- * 失败返回 0（调用方部署直通）。
- * 期望级联增益：DC 与 Nyquist 均为 1（奇数阶）或 10^(−rp/20)
- * （偶数阶）。
- *
- * @param[out] sections      biquad 节数组。
- * @param[in]  max_sections  sections 容量。
- * @param[in]  order         原型阶数。
- * @param[in]  fc1           下带边（Hz）。
- * @param[in]  fc2           上带边（Hz）。
- * @param[in]  fs            采样频率（Hz）。
- * @param[in]  ripple_db     通带纹波（dB）。
- * @return                   部署的节数，0 表示失败。
- */
+/* cheby1 带阻：DC 1，Nyquist 1（奇）/ 10^(−rp/20)（偶） */
 static uint8_t cheby1_bs_init(biquad_filter_t *sections,
                                       uint8_t max_sections,
                                       uint8_t order,
                                       float fc1, float fc2, float fs,
                                       float ripple_db)
 {
-    if (order == 0 || order > 8 || fc1 <= 0.0f || fc1 >= fs * 0.5f || ripple_db <= 0.0f)
+    if (order == 0 || order > 8 || !(fc1 > 0.0f) || !(fc1 < fs * 0.5f)
+        || !(ripple_db > 0.0f))
         return 0;
-    if (fc2 <= fc1 || fc2 >= fs * 0.5f) return 0;
+    if (!(fc2 > fc1) || !(fc2 < fs * 0.5f)) return 0;
 
     float epsilon = sqrtf(powf(10.0f, ripple_db / 10.0f) - 1.0f);
     float wc1 = 2.0f * (float)M_PI * prewarp(fc1, fs);
@@ -298,26 +259,14 @@ static uint8_t cheby1_bs_init(biquad_filter_t *sections,
 
 /* ── Chebyshev II ─────────────────────────────────────────────────── */
 
-/**
- * @brief Chebyshev II 低通设计：原型 → 管线 → 增益校验。
- *
- * 失败返回 0（调用方部署直通）。
- * 期望级联增益：DC 1，Nyquist 0（奇数阶）或 10^(−rs/20)（偶数阶）。
- *
- * @param[out] sections      biquad 节数组。
- * @param[in]  max_sections  sections 容量。
- * @param[in]  order         原型阶数。
- * @param[in]  fc            截止频率（Hz）。
- * @param[in]  fs            采样频率（Hz）。
- * @param[in]  ripple_db     阻带衰减（dB）。
- * @return                   部署的节数，0 表示失败。
- */
+/* cheby2 低通：DC 1，Nyquist 0（奇）/ 10^(−rs/20)（偶） */
 static uint8_t cheby2_lp_init(biquad_filter_t *sections,
                                       uint8_t max_sections,
                                       uint8_t order, float fc, float fs,
                                       float ripple_db)
 {
-    if (order == 0 || order > 8 || fc <= 0.0f || fc >= fs * 0.5f || ripple_db <= 0.0f)
+    if (order == 0 || order > 8 || !(fc > 0.0f) || !(fc < fs * 0.5f)
+        || !(ripple_db > 0.0f))
         return 0;
 
     float epsilon = 1.0f / sqrtf(powf(10.0f, ripple_db / 10.0f) - 1.0f);
@@ -339,26 +288,14 @@ static uint8_t cheby2_lp_init(biquad_filter_t *sections,
     return n;
 }
 
-/**
- * @brief Chebyshev II 高通设计：原型 → 管线 → 增益校验。
- *
- * 失败返回 0（调用方部署直通）。
- * 期望级联增益：DC 0（奇数阶）或 10^(−rs/20)（偶数阶），Nyquist 1。
- *
- * @param[out] sections      biquad 节数组。
- * @param[in]  max_sections  sections 容量。
- * @param[in]  order         原型阶数。
- * @param[in]  fc            截止频率（Hz）。
- * @param[in]  fs            采样频率（Hz）。
- * @param[in]  ripple_db     阻带衰减（dB）。
- * @return                   部署的节数，0 表示失败。
- */
+/* cheby2 高通：DC 0（奇）/ 10^(−rs/20)（偶），Nyquist 1 */
 static uint8_t cheby2_hp_init(biquad_filter_t *sections,
                                       uint8_t max_sections,
                                       uint8_t order, float fc, float fs,
                                       float ripple_db)
 {
-    if (order == 0 || order > 8 || fc <= 0.0f || fc >= fs * 0.5f || ripple_db <= 0.0f)
+    if (order == 0 || order > 8 || !(fc > 0.0f) || !(fc < fs * 0.5f)
+        || !(ripple_db > 0.0f))
         return 0;
 
     float epsilon = 1.0f / sqrtf(powf(10.0f, ripple_db / 10.0f) - 1.0f);
@@ -380,31 +317,17 @@ static uint8_t cheby2_hp_init(biquad_filter_t *sections,
     return n;
 }
 
-/**
- * @brief Chebyshev II 带通设计：原型 → 管线 → 增益校验。
- *
- * 失败返回 0（调用方部署直通）。
- * 期望级联增益：DC 与 Nyquist 均为 0（奇数阶）或 10^(−rs/20)
- * （偶数阶）。
- *
- * @param[out] sections      biquad 节数组。
- * @param[in]  max_sections  sections 容量。
- * @param[in]  order         原型阶数。
- * @param[in]  fc1           下带边（Hz）。
- * @param[in]  fc2           上带边（Hz）。
- * @param[in]  fs            采样频率（Hz）。
- * @param[in]  ripple_db     阻带衰减（dB）。
- * @return                   部署的节数，0 表示失败。
- */
+/* cheby2 带通：DC 0，Nyquist 0（奇）/ 10^(−rs/20)（偶） */
 static uint8_t cheby2_bp_init(biquad_filter_t *sections,
                                       uint8_t max_sections,
                                       uint8_t order,
                                       float fc1, float fc2, float fs,
                                       float ripple_db)
 {
-    if (order == 0 || order > 8 || fc1 <= 0.0f || fc1 >= fs * 0.5f || ripple_db <= 0.0f)
+    if (order == 0 || order > 8 || !(fc1 > 0.0f) || !(fc1 < fs * 0.5f)
+        || !(ripple_db > 0.0f))
         return 0;
-    if (fc2 <= fc1 || fc2 >= fs * 0.5f) return 0;
+    if (!(fc2 > fc1) || !(fc2 < fs * 0.5f)) return 0;
 
     float epsilon = 1.0f / sqrtf(powf(10.0f, ripple_db / 10.0f) - 1.0f);
     float wc1 = 2.0f * (float)M_PI * prewarp(fc1, fs);
@@ -427,30 +350,17 @@ static uint8_t cheby2_bp_init(biquad_filter_t *sections,
     return n;
 }
 
-/**
- * @brief Chebyshev II 带阻设计：原型 → 管线 → 增益校验。
- *
- * 失败返回 0（调用方部署直通）。
- * 期望级联增益：DC 与 Nyquist 均为 1。
- *
- * @param[out] sections      biquad 节数组。
- * @param[in]  max_sections  sections 容量。
- * @param[in]  order         原型阶数。
- * @param[in]  fc1           下带边（Hz）。
- * @param[in]  fc2           上带边（Hz）。
- * @param[in]  fs            采样频率（Hz）。
- * @param[in]  ripple_db     阻带衰减（dB）。
- * @return                   部署的节数，0 表示失败。
- */
+/* cheby2 带阻：DC 1，Nyquist 1 */
 static uint8_t cheby2_bs_init(biquad_filter_t *sections,
                                       uint8_t max_sections,
                                       uint8_t order,
                                       float fc1, float fc2, float fs,
                                       float ripple_db)
 {
-    if (order == 0 || order > 8 || fc1 <= 0.0f || fc1 >= fs * 0.5f || ripple_db <= 0.0f)
+    if (order == 0 || order > 8 || !(fc1 > 0.0f) || !(fc1 < fs * 0.5f)
+        || !(ripple_db > 0.0f))
         return 0;
-    if (fc2 <= fc1 || fc2 >= fs * 0.5f) return 0;
+    if (!(fc2 > fc1) || !(fc2 < fs * 0.5f)) return 0;
 
     float epsilon = 1.0f / sqrtf(powf(10.0f, ripple_db / 10.0f) - 1.0f);
     float wc1 = 2.0f * (float)M_PI * prewarp(fc1, fs);

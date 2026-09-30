@@ -7,17 +7,10 @@
 float prewarp(float fd, float fs)
 {
     /*
-     * Fail-closed。区间 (0, fs/2) 之外双线性映射无定义——过了 Nyquist，
-     * tan() 变号，根本不存在调用方能用的模拟频率——而旧实现把 fd 原样
-     * 返回，等于递回一个看着还挺像样的数而不是失败信号（旧的 "let caller
-     * clamp" 约定：其实没有任何调用方在 clamp）。NaN 会顺着 wc 传下去，
-     * 被 design_filter 的有限性闸拦掉，于是错误截止频率得到一个直通，
-     * 而不是一个悄悄错掉的滤波器。
-     *
-     * 写成取反比较，NaN 的 fd 或 fs 也会 fail-closed，而不是漏到 tanf()。
-     *
-     * 96 个族 init 调用前都已校验过 fc ∈ (0, fs/2)，所以行为变化只影响
-     * 直接调用这个导出辅助函数的用户。
+     * Fail-closed：区间 (0, fs/2) 之外双线性映射无定义（过了 Nyquist，tan()
+     * 变号，根本不存在调用方能用的模拟频率）。写成取反比较，NaN 的 fd 或 fs
+     * 也会 fail-closed 而不是漏到 tanf()；返回的 NaN 由下游 design_filter 的
+     * 有限性闸兜住，错误截止频率得到一个直通，而不是悄悄错掉的滤波器。
      */
     if (!(fd > 0.0f) || !(fd < fs * 0.5f)) {
         return NAN;
@@ -79,12 +72,9 @@ void analog_hp_transform(complex_t *poles, uint8_t np,
  *
  * 返回主支（实部非负）。
  *
- * @note 幅值采用缩放计算（见函数体注释）：近 Nyquist 的 BP/BS
- *       判别式 |re|,|im| ~ 1.5e10，裸平方（~2.25e20）尚可表示，
- *       但任一分量超过 √FLT_MAX ≈ 1.8e19 即溢出——而管线必须
- *       撑到 prewarp 的 tanf() 饱和处。按最大分量缩放让每个
- *       中间量 ≤ √2，把溢出悬崖推到 FLT_MAX 本身（此时设计
- *       已非有限，下游 fail-closed 拒绝）。
+ * @note 幅值采用缩放计算：近 Nyquist 的 BP/BS 判别式 |re|,|im| ~ 1.5e10，
+ *       裸平方在任一分量超过 √FLT_MAX ≈ 1.8e19 时溢出，而管线要撑到 prewarp
+ *       的 tanf() 饱和处。详细推导与档位见 test/test_butter.c 的近 Nyquist sweep 段。
  *
  * @param re  实部。
  * @param im  虚部。
@@ -93,11 +83,7 @@ void analog_hp_transform(complex_t *poles, uint8_t np,
 static complex_t c_sqrt(float re, float im)
 {
     complex_t r;
-    /* 缩放幅值。裸算 sqrt(re² + im²) 要先平方：近 Nyquist 的 BP/BS 判别式
-       达到 |re|,|im| ~ 1.5e10，其平方 ~2.25e20 尚可表示，但任一分量超过
-       √FLT_MAX ≈ 1.8e19 后不缩放的写法就溢出了，而管线必须一直撑到
-       prewarp 的 tanf() 饱和处。按最大分量缩放让每个中间量 ≤ √2，把溢出
-       悬崖推到 FLT_MAX 本身（那里设计已经非有限，下游 fail-closed）。 */
+    /* 按最大分量缩放，避免近 Nyquist 判别式的平方溢出（见上方 @note）。 */
     float m = fmaxf(fabsf(re), fabsf(im));
     if (m < 1e-20f) {
         r.re = 0.0f;
@@ -129,11 +115,9 @@ static void c_div(float *rr, float *ri, float ar, float ai, float br, float bi);
 /**
  * @brief 求 s² + B·s + C = 0（B、C 为复数）的稳定根。
  *
- * root1 = (−B − √(B²−4C))/2，root2 = C / root1。直接公式
- * (−B + √…)/2 在 |B|² ≫ 4|C| 时灾难性消减（宽带 BP/BS 设计的
- * 实原型极点，|xi·p| ≈ √disc）：f32 结果携带 ~ulp(|B|)/2 的
- * 虚部噪声，下游共轭配对随之被破坏。小根改用 C / root1
- * 完全避开消减。
+ * root1 = (−B − √(B²−4C))/2，root2 = C / root1。直接公式 (−B + √…)/2 在
+ * |B|² ≫ 4|C| 时灾难性消减（宽带 BP/BS 的实原型极点）；小根改用 C / root1
+ * 绕开。标定与回归档位见 test/test_butter.c 的「回归：含近实极点对的宽带 BP」段。
  *
  * @param[in]  B_re  一次项系数 B 的实部。
  * @param[in]  B_im  一次项系数 B 的虚部。
@@ -278,13 +262,7 @@ void bilinear_transform(complex_t *zp, uint8_t n, float fs)
 
 /* ------------------------------------------------------------------ */
 
-/**
- * @brief 两点间欧氏距离。
- *
- * @param a  第一个点。
- * @param b  第二个点。
- * @return   |a − b|。
- */
+/* 两点间欧氏距离 |a − b|。 */
 static inline float c_dist(const complex_t *a, const complex_t *b)
 {
     float dr = a->re - b->re;
@@ -292,13 +270,7 @@ static inline float c_dist(const complex_t *a, const complex_t *b)
     return sqrtf(dr * dr + di * di);
 }
 
-/**
- * @brief 相对容差实数判定：|im| ≤ eps·|z|（与 scipy _cplxreal 一致）。
- *
- * @param a    待判定的复数。
- * @param eps  相对容差。
- * @return     1 表示可视为实数。
- */
+/* 相对容差实数判定：|im| ≤ eps·|z|（与 scipy _cplxreal 一致）。 */
 static inline int is_real(const complex_t *a, float eps)
 {
     return fabsf(a->im) <= eps * sqrtf(a->re * a->re + a->im * a->im);
@@ -331,34 +303,14 @@ static void make_biquad(const complex_t *p1, const complex_t *p2,
     b[2] = z1->re * z2->re - z1->im * z2->im;
 }
 
-/**
- * @brief 复数乘法：r = a · b。
- *
- * @param[out] rr  结果实部。
- * @param[out] ri  结果虚部。
- * @param[in]  ar  乘数 a 的实部。
- * @param[in]  ai  乘数 a 的虚部。
- * @param[in]  br  乘数 b 的实部。
- * @param[in]  bi  乘数 b 的虚部。
- */
+/* 复数乘法 r = a · b，实虚部分开传出。 */
 static void c_mul(float *rr, float *ri, float ar, float ai, float br, float bi)
 {
     *rr = ar * br - ai * bi;
     *ri = ar * bi + ai * br;
 }
 
-/**
- * @brief 复数除法：r = a / b（b ≠ 0）。
- *
- * b 为零时结果置 0（防御路径；正常流程不会发生）。
- *
- * @param[out] rr  结果实部。
- * @param[out] ri  结果虚部。
- * @param[in]  ar  被除数 a 的实部。
- * @param[in]  ai  被除数 a 的虚部。
- * @param[in]  br  除数 b 的实部。
- * @param[in]  bi  除数 b 的虚部。
- */
+/* 复数除法 r = a / b；b 为零时结果置 0（防御路径，正常流程不会发生）。 */
 static void c_div(float *rr, float *ri, float ar, float ai, float br, float bi)
 {
     float den = br * br + bi * bi;
@@ -410,12 +362,9 @@ float bilinear_zpk_gain_scaled(float k, float s, uint8_t degree,
                                const complex_t *z, uint8_t nz,
                                const complex_t *p, uint8_t np, float K)
 {
-    /* k · s^degree · ∏(K−z_i) / ∏(K−p_i)，按交错顺序计算让运行乘积始终有界。
-       单独先算 s^degree 会在近 Nyquist 的 LP/BP 上溢出 f32（如
-       wc^8 ≈ FLT_MAX），即使最终的 k 很小——∏(K−p) 各因子与 s 同量级
-       （LP：|K−p| ≈ wc），但一旦某个中间量溢出了，抵消就再也不会发生。
-       把每个 s 因子与一次 (K−p) 除法配对，每步比值 s/|K−p| 保持有界
-       （wc = 63600、K = 2000 时约 1.03）。 */
+    /* k · s^degree · ∏(K−z_i) / ∏(K−p_i)，按交错顺序算让运行乘积始终有界：
+       单独先算 s^degree 会在近 Nyquist 的 LP/BP 上溢出 f32（wc^8 ≈ FLT_MAX），
+       而中间量一旦溢出，后面同量级的 ∏(K−p) 因子再也抵消不回来。 */
     float rr = k, ri = 0.0f;
     uint8_t i_s = 0, i_z = 0, i_p = 0;
 
@@ -556,11 +505,8 @@ static uint8_t count_used(const uint8_t *used, uint8_t n,
  * 失败时合成共轭（不消耗任何元素——调用方的全认领不变量
  * 随后 fail-closed）。
  *
- * @note 盒内取**最近**未用元素：取"第一个盒内"在高 Q BP/BS 簇
- *       （对间距 ~8e-4 < 盒 ~1e-3）会偷走别对的伴侣，两节部署成
- *       完全重复、丢失一对，终态不变量检测不到（间距小于其
- *       1e-3 匹配容差）。最近共轭在双线性 f32 噪声（~2e-4）与
- *       外来对（~8e-4）之间正确选中真伴侣。
+ * @note 盒内取**最近**未用元素，不是第一个：否则高 Q BP/BS 簇里会偷走别对
+ *       的伴侣，部署出两节完全重复、丢失一对。回归档位见 test/test_cheby.c。
  *
  * @param[in]     arr  数组。
  * @param[in,out] used 已用位图（命中时置位）。
@@ -608,7 +554,8 @@ static void claim_conjugate(const complex_t *arr, uint8_t *used, uint8_t n,
 /**
  * @brief 求 z² + c1·z + c2 的根。
  *
- * c2 == 0 → 唯一有限根 −c1（另一根在无穷远，忽略）。
+ * c2 == 0 时该节实际是一阶（实极点/零点对），只返回实根 −c1，忽略补位产生的
+ * z = 0 根——输入零极点多重集里没有它（见下方的 match_roots）。
  *
  * @param[in]  c1    一次项系数。
  * @param[in]  c2    常数项系数。
@@ -643,8 +590,7 @@ static uint8_t poly_roots(float c1, float c2, complex_t roots[2])
  * @brief 多重集匹配：roots 的每个根须命中 pool 中一个不同的
  *        未匹配元素（欧氏容差）。
  *
- * 紧对成员允许互换命中——无害；拒绝的是复现不出任何输入元素
- * 的根（重复对挤掉实数元素的情形）。
+ * 紧对成员允许互换命中——无害；拒绝的是复现不出任何输入元素的根。
  *
  * @param[in]     roots    待匹配根数组。
  * @param[in]     nr       根个数。
@@ -693,17 +639,11 @@ uint8_t zpk2sos(const complex_t *zeros, const complex_t *poles, uint8_t n,
     uint8_t n_z = n;
     uint8_t section = 0;
     uint8_t max_sections = (n + 1) / 2;
-    /* 实/复分类容差（eps_class）与共轭认领盒（eps_claim）是两个不同的量，
-       不能共用一个常数：
-       - 真·实极点/零点的虚部严格为 0.0f——每一级变换对实数输入都保持
-         实数运算——而真·共轭对的 |im| ≥ ~1e-5（对可表示的最宽频带，
-         约为 2π·im(p)·fc1/fs）。用 1e-3 作分类容差太松：宽带 BP/BS 设计
-         会产生合法的近实共轭对，|im| ~ 2.5e-4..6e-4，被压平成"实"之后
-         与另一个对的成员跨对配对——造出来的节其极点恰好在 z = 1，
-         整个设计随之失败。scipy 的 f64 对应值是 100·eps；
-         100·eps_f32 ≈ 1.2e-5。
-       - 认领盒必须吞下双线性变换的 f32 舍入——它在单位圆附近可以把一个
-         共轭对劈开 ~2e-4 的绝对量（K² − |s|² 消减）：保持 1e-3。 */
+    /* eps_class（实/复分类）与 eps_claim（共轭认领盒）是两个不同的量，不可合并：
+       - 真·实零极点的虚部严格为 0.0f，而真·共轭对 |im| ≥ ~1e-5。用 1e-3 做分类
+         容差会把宽带 BP/BS 的合法近实共轭对压平成"实"，与另一个对的成员跨对
+         配对，造出极点恰好在 z = 1 的节，整个设计随之失败。
+       - 认领盒必须吞下双线性变换在单位圆附近的 f32 舍入（可把共轭对劈开 ~2e-4）。 */
     const float eps_class = 1e-5f;
     const float eps_claim = 1e-3f;
 
@@ -817,10 +757,8 @@ uint8_t zpk2sos(const complex_t *zeros, const complex_t *poles, uint8_t n,
         section++;
     }
 
-    /* 3b. 不变量：全部零极点都必须被认领。合成共轭会留下未被认领的空隙，
-       说明 n_p/n_z 记账与数组脱节、有零极点被悄悄丢出级联（实测：
-       一个错位的近重复节顶掉了一对低 Q 极点 → ~350 倍谐振）。
-       此时 fail-closed。 */
+    /* 3b. 不变量：全部零极点都必须被认领。留下未认领的空隙说明 n_p/n_z 记账与
+       数组脱节、有零极点被悄悄丢出级联（回归见 test/test_cheby.c）。 */
     for (uint8_t i = 0; i < n; i++) {
         if (!used_p[i] || !used_z[i]) return 0;
     }
@@ -866,12 +804,7 @@ uint8_t zpk2sos(const complex_t *zeros, const complex_t *poles, uint8_t n,
 /*  共享设计管线（Butterworth / Chebyshev）                            */
 /* ================================================================== */
 
-/*
- * BP/BS 变换后的最大原型阶数：2 × 8 = 16 个零极点，ceil(16/2) = 8 节。
- * init 期间栈用量：poles（128 B）+ zeros（128 B）+ sos（192 B）≈ 448 B，
- * 加上调用侧的原型数组（~128 B）。整条链的实测栈峰值 992 B
- * （cheby2_bp_init 链，arm-none-eabi-gcc 16.2 / Cortex-M4 -Os）。
- */
+/* BP/BS 变换后的最大原型阶数：2 × 8 = 16 个零极点，ceil(16/2) = 8 节。 */
 
 uint8_t design_filter(biquad_filter_t *sections, uint8_t max_sections,
                       uint8_t type,
@@ -881,20 +814,30 @@ uint8_t design_filter(biquad_filter_t *sections, uint8_t max_sections,
                       const complex_t *proto_zeros, uint8_t nz)
 {
     /*
-     * Fail-closed 输入边界闸。这是管线此前唯一缺的咽喉点：下面的
-     * `poles`/`zeros` 只容纳 ZPK2SOS_MAX_N 个元素，而 `degree` 是
-     * uint8_t，所以超出包络的 np 会让 memcpy 越过栈数组，nz > np 则让
-     * 相对阶数下溢。树内调用方一律传 np <= 8（原型阶数），但
-     * design_filter 是对外导出的——宁可拒绝，也不要越界。
+     * Fail-closed 输入边界闸：poles/zeros 只容纳 ZPK2SOS_MAX_N 个元素、degree 是
+     * uint8_t，np 超出包络会越界写栈，nz > np 会让相对阶数下溢。
+     *
+     * BP/BS 另需再紧一半（上限 ZPK2SOS_MAX_N/2 = 8 阶）：这两种类型的变换把每个
+     * 原型零极点一分为二原地写回（容量要求 2·np，见 analog_bp_transform 文档）。
+     * 族 API 恰好卡在 8 阶，但本函数是导出符号，边界得自己守——越界发生在随后的
+     * BP/BS 分支，而唯一能拦住它的 ns > max_sections 在越界之后。档位见
+     * test/test_butter.c 的「回归：design_filter 输入边界闸」段。
      */
     if (np == 0 || np > ZPK2SOS_MAX_N || nz > np) return 0;
+    if ((type == FILTER_BANDPASS || type == FILTER_BANDSTOP)
+        && np > ZPK2SOS_MAX_N / 2) return 0;
 
     complex_t poles[ZPK2SOS_MAX_N];
     complex_t zeros[ZPK2SOS_MAX_N];
     uint8_t degree = np - nz; /* 原型相对阶数 */
 
     memcpy(poles, proto_poles, (size_t)np * sizeof(complex_t));
-    if (nz > 0 && proto_zeros != NULL) {
+    if (nz > 0) {
+        /* nz > 0 却没有零点数据：不能继续。下面整条管线会在**未初始化**的栈数组
+           上做频率变换、增益折叠与零极点配对（读未初始化值是 UB，而且很可能
+           部署出一个看似有效的垃圾设计）。fail-closed 拒绝，而不是静默跳过
+           memcpy 接着跑。 */
+        if (proto_zeros == NULL) return 0;
         memcpy(zeros, proto_zeros, (size_t)nz * sizeof(complex_t));
     }
 
@@ -993,10 +936,9 @@ uint8_t check_cascade_gains(const biquad_filter_t *sections,
         hn *= (b->num_z[0] - b->num_z[1] + b->num_z[2])
             / (1.0f - b->den_z[1] + b->den_z[2]);
     }
-    /* 精确结构增益（0 或 1，由 z = ±1 处的零点保证）容差取 ±0.1。
-       纹波边缘增益（cheby1/2 偶数阶的 10^(−rp/rs/20)）落在带边附近
-       响应最陡处，f32 双线性畸变会移动纹波图样；这些放宽到 ±0.25。
-       标定依据在头文件；已确认的配对缺陷偏差 ≥ 0.45，仍远在两个窗口之外。 */
+    /* 精确结构增益（0 或 1，由 z = ±1 处的零点保证）容差 ±0.1；纹波边缘增益
+       （cheby1/2 偶数阶的 10^(−rp/rs/20)）落在带边响应最陡处，放宽到 ±0.25。
+       窗口标定与配对缺陷偏差见 test/test_cheby.c 的 sweep 段。 */
     float tol0 = (dc_exp == 0.0f || dc_exp == 1.0f) ? 0.1f : 0.25f;
     float toln = (ny_exp == 0.0f || ny_exp == 1.0f) ? 0.1f : 0.25f;
     return fabsf(h0 - dc_exp) <= tol0 && fabsf(hn - ny_exp) <= toln;

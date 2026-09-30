@@ -82,4 +82,11 @@ if(Python3_FOUND)
     add_test(NAME verify_zpk_gain
              COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/verify_zpk_gain.py)
     set_tests_properties(verify_zpk_gain PROPERTIES SKIP_RETURN_CODE 77)
+else()
+    # 静默少注册 8 项测试会让“13/13”变成“5/5”而看不出来。这里把话说清楚，
+    # 不让“未运行”与“全通过”在构建输出里无从区分。
+    message(WARNING
+        "Python3 未找到：8 项测试不会注册（4 个 CSV 生成器 + scipy_compare + "
+        "notch_py_compare + peak_py_compare + verify_zpk_gain）。"
+        "本次 ctest 只会跑 5 项 C 测试——不要把它当成 13/13。")
 endif()

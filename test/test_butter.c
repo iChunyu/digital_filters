@@ -101,6 +101,10 @@ static float measure_nyquist_gain(biquad_filter_t *sections, uint8_t ns,
  */
 static float cascade_dc_gain(const biquad_filter_t *sections, uint8_t ns)
 {
+    /* ns == 0（无效滤波器）：空级联两端乘积都是 1.0，会让期望 (1, 1) 的检查
+       空洞通过——check_cascade_gains 正是为此拒绝 0 节。返回 NaN 让比较失败，
+       而不是返回 1.0 假装通过。 */
+    if (ns == 0) return NAN;
     float h = 1.0f;
     for (uint8_t i = 0; i < ns; i++)
         h *= (sections[i].num_z[0] + sections[i].num_z[1] + sections[i].num_z[2])
@@ -117,6 +121,10 @@ static float cascade_dc_gain(const biquad_filter_t *sections, uint8_t ns)
  */
 static float cascade_nyq_gain(const biquad_filter_t *sections, uint8_t ns)
 {
+    /* ns == 0（无效滤波器）：空级联两端乘积都是 1.0，会让期望 (1, 1) 的检查
+       空洞通过——check_cascade_gains 正是为此拒绝 0 节。返回 NaN 让比较失败，
+       而不是返回 1.0 假装通过。 */
+    if (ns == 0) return NAN;
     float h = 1.0f;
     for (uint8_t i = 0; i < ns; i++)
         h *= (sections[i].num_z[0] - sections[i].num_z[1] + sections[i].num_z[2])
@@ -136,6 +144,9 @@ static float cascade_nyq_gain(const biquad_filter_t *sections, uint8_t ns)
 static float max_gain_over(biquad_filter_t *sections, uint8_t ns,
                            float fs, int steps)
 {
+    /* ns == 0（无效滤波器）：0 节就是直通，会被 `max|H| < 1.2f` 这类上界检查
+       空洞放行。返回 NaN 让比较失败，而不是返回 ~1.0 假装通过。 */
+    if (ns == 0) return NAN;
     const float grid[] = {20.0f, 24.5f, 50.0f, 100.0f, 200.0f, 300.0f, 480.0f};
     float m = 0.0f;
     for (unsigned i = 0; i < sizeof(grid) / sizeof(grid[0]); i++) {
@@ -205,9 +216,10 @@ int main(void)
     CHECK(binv.valid == 0, "LP 2nd fc=fs/2 invalid");
 
     /* ── 回归：init 被拒后 num_sections == 0，而不是垃圾值 ───────────────
-       X-macro 生成的 init 置 valid = 0 后就直接 return，从未写过
-       num_sections，于是不检查 valid 就读它的调用方会拿到结构体里
-       碰巧残留的值（memset 0xAB → 171）。先投毒，否则断言会空洞通过。 ── */
+       历史：X-macro 生成的 init 曾在置 valid = 0 后直接 return、从不写
+       num_sections，于是不检查 valid 就读它的调用方会拿到结构体里残留的值
+       （memset 0xAB → 171）。现在宏体在调 helper **之前**显式清零，本回归
+       守住这个行为。先投毒，否则断言会空洞通过。 ── */
 
     butter_lp_4th_t bns;
     memset(&bns, 0xAB, sizeof bns);
@@ -219,6 +231,45 @@ int main(void)
     butter_lp_4th_init(&bns, 1.0f, 48000.0f);        /* 极点裕量拒绝 */
     CHECK(bns.valid == 0, "num_sections: fc=1Hz@48k rejected");
     CHECK(bns.num_sections == 0, "deep rejection also clears num_sections");
+
+    /* ── 入口闸的 NaN 行为：必须 fail-closed ─────────────────────────────
+       AGENTS.md 要求入口闸一律写 !(x > 0)：写成 `x <= 0` 与 NaN 比较恒假，
+       NaN 会被放行、一路传到 prewarp，最后靠 design_filter 的有限性闸兜成
+       fail-closed（防线只剩一层；一旦编译时带上 -ffast-math，连那层都会
+       被折叠掉——所以头文件里有 #error 守卫）。这里把四个族的入口闸行为
+       与 **四个 X-macro 宏体的 num_sections 清零**同时钉住（过去只测了 LP）。 */
+
+    butter_lp_4th_t bnan_lp;
+    memset(&bnan_lp, 0xAB, sizeof bnan_lp);
+    butter_lp_4th_init(&bnan_lp, NAN, 48000.0f);
+    CHECK(bnan_lp.valid == 0 && bnan_lp.num_sections == 0,
+          "LP init(NaN fc) fail-closed, num_sections cleared");
+    memset(&bnan_lp, 0xAB, sizeof bnan_lp);
+    butter_lp_4th_init(&bnan_lp, 1000.0f, NAN);
+    CHECK(bnan_lp.valid == 0 && bnan_lp.num_sections == 0,
+          "LP init(NaN fs) fail-closed, num_sections cleared");
+
+    butter_hp_4th_t bnan_hp;
+    memset(&bnan_hp, 0xAB, sizeof bnan_hp);
+    butter_hp_4th_init(&bnan_hp, NAN, 48000.0f);
+    CHECK(bnan_hp.valid == 0 && bnan_hp.num_sections == 0,
+          "HP init(NaN fc) fail-closed, num_sections cleared");
+
+    butter_bp_4th_t bnan_bp;
+    memset(&bnan_bp, 0xAB, sizeof bnan_bp);
+    butter_bp_4th_init(&bnan_bp, NAN, 5000.0f, 48000.0f);
+    CHECK(bnan_bp.valid == 0 && bnan_bp.num_sections == 0,
+          "BP init(NaN fc1) fail-closed, num_sections cleared");
+    memset(&bnan_bp, 0xAB, sizeof bnan_bp);
+    butter_bp_4th_init(&bnan_bp, 1000.0f, NAN, 48000.0f);
+    CHECK(bnan_bp.valid == 0 && bnan_bp.num_sections == 0,
+          "BP init(NaN fc2) fail-closed, num_sections cleared");
+
+    butter_bs_4th_t bnan_bs;
+    memset(&bnan_bs, 0xAB, sizeof bnan_bs);
+    butter_bs_4th_init(&bnan_bs, 1000.0f, NAN, 48000.0f);
+    CHECK(bnan_bs.valid == 0 && bnan_bs.num_sections == 0,
+          "BS init(NaN fc2) fail-closed, num_sections cleared");
 
     /* ── LP 四阶 → 2 节 ───────────────────────────────────────────────── */
 
@@ -370,6 +421,17 @@ int main(void)
     gn = measure_gain(bnn.sections, bnn.num_sections, bnn.valid, 470.0f, 1000.0f, 8000);
     CHECK(CLOSE(gn, 0.707f, 0.05f), "LP 8th near-Nyquist edge gain ~ 0.707");
 
+    /* ── c_sqrt 的缩放计算（防近 Nyquist BP/BS 的平方幅值溢出）─────────────
+       c_sqrt 的幅值 sqrt(re² + im²) 若按裸平方算：近 Nyquist 的 BP/BS 判别式
+       |re|,|im| ~ 1.5e10，平方 ~2.25e20 尚可表示，但任一分量超过
+       √FLT_MAX ≈ 1.8e19 即溢出成 inf，整条管线随之 fail-closed。按最大分量
+       缩放把每个中间量压到 ≤ √2，溢出悬崖推到 FLT_MAX 本身（那时设计已非有限，
+       下游本来就会拒）。
+
+       注意：本条只有**间接**覆盖（下面的 BP8 超宽带 / 近 Nyquist sweep 会经过
+       这条路径）。把 c_sqrt 改回裸平方当前**不会**让任何断言变红——真要钉住它，
+       需要直接喂 |re|,|im| > √FLT_MAX 的判别式给 c_sqrt。 */
+
     /* ── 回归：含近实极点对的宽带 BP ──────────────────────────────────────
        4/5/8 阶（极点距 z=1 约 2.5e-4）的 f32 Jury 和 1 + a1 + a2 过去会
        恰好消成 0.0f，把设计误拒，而 1~3 阶却能通过；随后过松的实/复分类
@@ -439,6 +501,39 @@ int main(void)
                             1.0f, gp, 4, gz, 6) == 0,
               "design_filter rejects nz > np (degree underflow)");
 
+        /* nz > 0 却传 NULL 零点：不能静默跳过 memcpy 接着跑——那样会在
+           **未初始化**的栈数组上做频率变换、增益折叠与配对（读未初始化值是
+           UB，而且很可能部署出一个看似有效的垃圾设计）。必须 fail-closed。 */
+        CHECK(design_filter(gsec, 8, FILTER_LOWPASS, 628.3f, 0.0f, 48000.0f,
+                            1.0f, gp, 4, NULL, 2) == 0,
+              "design_filter rejects nz > 0 with NULL proto_zeros");
+
+        /* BP/BS 的原型上限是 ZPK2SOS_MAX_N/2 = 8，不是 ZPK2SOS_MAX_N。
+           这两种类型的变换把每个原型零极点一分为二、原地写回同一个 16 元素
+           数组，所以原型 9~16 阶会直接越界写栈（ASan：写穿 poles[16]，
+           发生在 BP/BS 分支，而唯一能拦住它的 ns > max_sections 在越界之后）。
+           族 API 恰好卡在 8 阶，所以这条只对直接调用导出函数的路径生效。 */
+        CHECK(design_filter(gsec, 16, FILTER_BANDPASS, 628.3f, 1256.6f,
+                            48000.0f, 1.0f, gp, 12, NULL, 0) == 0,
+              "design_filter rejects BP np=12 (2*np overflows poles[16])");
+        CHECK(design_filter(gsec, 16, FILTER_BANDSTOP, 628.3f, 1256.6f,
+                            48000.0f, 1.0f, gp, 12, NULL, 0) == 0,
+              "design_filter rejects BS np=12 (2*np overflows poles[16])");
+
+        /* 正向对照：BP 8 阶原型（内部翻倍到正好 16 = 容量上限）必须仍可设计，
+           确保上面的闸不过度拒绝。极点用与 butter_proto 表同一约定的解析公式。 */
+        complex_t bp8[8];
+        for (int k = 0; k < 8; k++) {
+            float th = (float)M_PI * (float)(2 * k + 8 + 1) / 16.0f;
+            bp8[k].re =  cosf(th);
+            bp8[k].im = -sinf(th);
+        }
+        uint8_t bp8ns = design_filter(gsec, 8, FILTER_BANDPASS,
+                                      2.0f * (float)M_PI * prewarp(50.0f, 1000.0f),
+                                      2.0f * (float)M_PI * prewarp(120.0f, 1000.0f),
+                                      1000.0f, 1.0f, bp8, 8, NULL, 0);
+        CHECK(bp8ns == 8, "design_filter accepts BP np=8 (doubles to exactly 16)");
+
         /* 正向对照——该闸不得误拒包络内的原型。同样的调用形式、np = 2，
            必须仍能部署出 1 节。 */
         complex_t lp2[2] = {{-0.70710678f, -0.70710678f},
@@ -468,6 +563,38 @@ int main(void)
         biquad_filter_set_empty(&empty_sec);
         CHECK(check_cascade_gains(&empty_sec, 0, 1.0f, 1.0f) == 0,
               "check_cascade_gains rejects an empty cascade");
+
+        /* 增益窗口两侧边界。此前整个套件里 check_cascade_gains 从未拒绝过任何
+           设计（实测 641 次调用、0 次失败），窗口常数被随意改动不会有测试变红；
+           而文档又声称它有标定档位。这里把两个窗口各自的两侧钉住。
+
+           注意窗口是**按期望值选**的：期望 ∈ {0, 1}（精确结构增益）用 ±0.1，
+           其余（纹波边缘）用 ±0.25。所以要探 ±0.1 的边界必须改**实测增益**
+           （用一个纯增益节 b = {g,0,0}、a = {1,0,0}，则 H(0) = H(π) = g），
+           要探 ±0.25 的边界则让期望值取非 0/1。窗口含义与标定依据见 test_cheby.c。 */
+        biquad_filter_t gwin;
+        biquad_filter_set_empty(&gwin);       /* a = {1,0,0} → 分母恒为 1 */
+
+        gwin.num_z[0] = 0.9001f;              /* 偏差 0.0999 ≤ 0.1 */
+        CHECK(check_cascade_gains(&gwin, 1, 1.0f, 1.0f) == 1,
+              "gain window: just inside +-0.1 accepted");
+        gwin.num_z[0] = 0.8999f;              /* 偏差 0.1001 > 0.1 */
+        CHECK(check_cascade_gains(&gwin, 1, 1.0f, 1.0f) == 0,
+              "gain window: just outside +-0.1 rejected");
+
+        gwin.num_z[0] = 0.5001f;              /* |0.75 - 0.5001| = 0.2499 ≤ 0.25 */
+        CHECK(check_cascade_gains(&gwin, 1, 0.75f, 0.75f) == 1,
+              "gain window: just inside +-0.25 (ripple edge) accepted");
+        gwin.num_z[0] = 0.4999f;              /* |0.75 - 0.4999| = 0.2501 > 0.25 */
+        CHECK(check_cascade_gains(&gwin, 1, 0.75f, 0.75f) == 0,
+              "gain window: just outside +-0.25 (ripple edge) rejected");
+
+        /* 期望是精确结构增益、实测却不对：必须被 ±0.1 窗口拒。 */
+        biquad_filter_set_empty(&gwin);       /* H(0) = H(π) = 1 */
+        CHECK(check_cascade_gains(&gwin, 1, 0.0f, 1.0f) == 0,
+              "gain window: expect DC=0 but measured 1 rejected");
+        CHECK(check_cascade_gains(&gwin, 1, 1.0f, 0.0f) == 0,
+              "gain window: expect Nyquist=0 but measured 1 rejected");
     }
 
     /* ── 结构体尺寸 ───────────────────────────────────────────────────── */
@@ -491,6 +618,7 @@ int main(void)
             swf.valid = 0; \
             butter_lp_##ol##_init(&swf, sw_bfc[sw_fi], 1000.0f); \
             CHECK(swf.valid == 1, "sweep butter LP " #ol " valid"); \
+            CHECK(swf.num_sections == (ns), "sweep butter LP  " #ol " section count"); \
             if (swf.valid) { \
                 y = cascade_dc_gain(swf.sections, swf.num_sections); \
                 CHECK(CLOSE(y, 1.0f, 0.1f), "sweep butter LP " #ol " DC window"); \
@@ -509,6 +637,7 @@ int main(void)
             swf.valid = 0; \
             butter_hp_##ol##_init(&swf, sw_bfc[sw_fi], 1000.0f); \
             CHECK(swf.valid == 1, "sweep butter HP " #ol " valid"); \
+            CHECK(swf.num_sections == (ns), "sweep butter HP  " #ol " section count"); \
             if (swf.valid) { \
                 y = cascade_dc_gain(swf.sections, swf.num_sections); \
                 CHECK(fabsf(y) <= 0.1f, "sweep butter HP " #ol " DC window"); \
@@ -528,6 +657,7 @@ int main(void)
             butter_bp_##ol##_init(&swf, sw_bbands[sw_bi][0], sw_bbands[sw_bi][1], \
                                   1000.0f); \
             CHECK(swf.valid == 1, "sweep butter BP " #ol " valid"); \
+            CHECK(swf.num_sections == (ns), "sweep butter BP  " #ol " section count"); \
             if (swf.valid) { \
                 y = cascade_dc_gain(swf.sections, swf.num_sections); \
                 CHECK(fabsf(y) <= 0.1f, "sweep butter BP " #ol " DC window"); \
@@ -550,6 +680,7 @@ int main(void)
             butter_bs_##ol##_init(&swf, sw_bbands[sw_bi][0], sw_bbands[sw_bi][1], \
                                   1000.0f); \
             CHECK(swf.valid == 1, "sweep butter BS " #ol " valid"); \
+            CHECK(swf.num_sections == (ns), "sweep butter BS  " #ol " section count"); \
             if (swf.valid) { \
                 y = cascade_dc_gain(swf.sections, swf.num_sections); \
                 CHECK(CLOSE(y, 1.0f, 0.1f), "sweep butter BS " #ol " DC window"); \

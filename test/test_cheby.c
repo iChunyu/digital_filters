@@ -67,6 +67,9 @@ static void section_zeros_stats(biquad_filter_t *secs, int ns,
 static float measure_gain_at(biquad_filter_t *secs, uint8_t ns,
                              float freq, float fs, int steps)
 {
+    /* ns == 0（无效滤波器）：返回一个必然超出任何上界的值让检查失败，
+       而不是让输入直通、测出 ~1.0 再被 `y < 1.2f` 空洞放行。 */
+    if (ns == 0) return 1e30f;
     float x = 0.0f;
     for (uint8_t i = 0; i < ns; i++) {
         biquad_filter_reset(&secs[i], x);
@@ -98,6 +101,9 @@ static float measure_gain_at(biquad_filter_t *secs, uint8_t ns,
  */
 static float measure_nyquist_gain(biquad_filter_t *secs, uint8_t ns, int steps)
 {
+    /* ns == 0（无效滤波器）：返回一个必然超出任何上界的值让检查失败，
+       而不是让输入直通、测出 ~1.0 再被 `y < 1.2f` 空洞放行。 */
+    if (ns == 0) return 1e30f;
     float x = 0.0f;
     for (uint8_t i = 0; i < ns; i++) {
         biquad_filter_reset(&secs[i], 0.0f);
@@ -126,6 +132,10 @@ static float measure_nyquist_gain(biquad_filter_t *secs, uint8_t ns, int steps)
  */
 static float cascade_dc_gain(const biquad_filter_t *secs, uint8_t ns)
 {
+    /* ns == 0（无效滤波器）：空级联两端乘积都是 1.0，会让期望 (1, 1) 的检查
+       空洞通过——check_cascade_gains 正是为此拒绝 0 节。返回 NaN 让比较失败，
+       而不是返回 1.0 假装通过。 */
+    if (ns == 0) return NAN;
     float h = 1.0f;
     for (uint8_t i = 0; i < ns; i++)
         h *= (secs[i].num_z[0] + secs[i].num_z[1] + secs[i].num_z[2])
@@ -142,6 +152,10 @@ static float cascade_dc_gain(const biquad_filter_t *secs, uint8_t ns)
  */
 static float cascade_nyq_gain(const biquad_filter_t *secs, uint8_t ns)
 {
+    /* ns == 0（无效滤波器）：空级联两端乘积都是 1.0，会让期望 (1, 1) 的检查
+       空洞通过——check_cascade_gains 正是为此拒绝 0 节。返回 NaN 让比较失败，
+       而不是返回 1.0 假装通过。 */
+    if (ns == 0) return NAN;
     float h = 1.0f;
     for (uint8_t i = 0; i < ns; i++)
         h *= (secs[i].num_z[0] - secs[i].num_z[1] + secs[i].num_z[2])
@@ -161,6 +175,9 @@ static float cascade_nyq_gain(const biquad_filter_t *secs, uint8_t ns)
 static float max_gain_over(biquad_filter_t *secs, uint8_t ns,
                            float fs, int steps)
 {
+    /* ns == 0（无效滤波器）：0 节就是直通，会被 `max|H| < 1.2f` 这类上界检查
+       空洞放行。返回 NaN 让比较失败，而不是返回 ~1.0 假装通过。 */
+    if (ns == 0) return NAN;
     const float grid[] = {20.0f, 24.5f, 50.0f, 100.0f, 200.0f, 300.0f, 480.0f};
     float m = 0.0f;
     for (unsigned i = 0; i < sizeof(grid) / sizeof(grid[0]); i++) {
@@ -310,15 +327,58 @@ int main(void)
     CHECK(ci2.valid == 0, "cheby2 ripple=0 invalid");
 
     /* ── 回归：init 被拒后 num_sections == 0，而不是垃圾值 ───────────────
-       X-macro 生成的 init 置 valid = 0 后就直接 return，从未写过
-       num_sections，于是不检查 valid 就读它的调用方会拿到结构体里
-       碰巧残留的值（memset 0xAB → 171）。先投毒，否则断言会空洞通过。 ── */
+       历史：X-macro 生成的 init 曾在置 valid = 0 后直接 return、从不写
+       num_sections，于是不检查 valid 就读它的调用方会拿到结构体里残留的值
+       （memset 0xAB → 171）。现在宏体在调 helper **之前**显式清零，本回归
+       守住这个行为。先投毒，否则断言会空洞通过。 ── */
 
     cheby1_lp_4th_t cns;
     memset(&cns, 0xAB, sizeof cns);
     cheby1_lp_4th_init(&cns, 100.0f, 48000.0f, 0.0f);   /* 参数校验拒绝 */
     CHECK(cns.valid == 0, "num_sections: ripple=0 rejected");
     CHECK(cns.num_sections == 0, "rejected init leaves num_sections == 0");
+
+    /* ── 入口闸的 NaN 行为：必须 fail-closed ─────────────────────────────
+       AGENTS.md 要求入口闸一律写 !(x > 0)。本族过去写 `fc <= 0.0f` 与
+       `ripple_db <= 0.0f`：与 NaN 比较恒假 → NaN 被放行，靠下游 design_filter
+       的有限性闸兜成 fail-closed（防线只剩一层）。这里把入口闸行为与
+       **其余 X-macro 宏体的 num_sections 清零**一并钉住（过去只测了 cheby1 LP）。 */
+
+    cheby1_hp_4th_t cnan1hp;
+    memset(&cnan1hp, 0xAB, sizeof cnan1hp);
+    cheby1_hp_4th_init(&cnan1hp, NAN, 48000.0f, 1.0f);
+    CHECK(cnan1hp.valid == 0 && cnan1hp.num_sections == 0,
+          "cheby1 HP init(NaN fc) fail-closed, num_sections cleared");
+
+    cheby1_bp_4th_t cnan1bp;
+    memset(&cnan1bp, 0xAB, sizeof cnan1bp);
+    cheby1_bp_4th_init(&cnan1bp, 1000.0f, NAN, 48000.0f, 1.0f);
+    CHECK(cnan1bp.valid == 0 && cnan1bp.num_sections == 0,
+          "cheby1 BP init(NaN fc2) fail-closed, num_sections cleared");
+
+    cheby1_bs_4th_t cnan1bs;
+    memset(&cnan1bs, 0xAB, sizeof cnan1bs);
+    cheby1_bs_4th_init(&cnan1bs, NAN, 5000.0f, 48000.0f, 1.0f);
+    CHECK(cnan1bs.valid == 0 && cnan1bs.num_sections == 0,
+          "cheby1 BS init(NaN fc1) fail-closed, num_sections cleared");
+
+    cheby1_lp_4th_t cnan1lp;
+    memset(&cnan1lp, 0xAB, sizeof cnan1lp);
+    cheby1_lp_4th_init(&cnan1lp, 100.0f, 48000.0f, NAN);
+    CHECK(cnan1lp.valid == 0 && cnan1lp.num_sections == 0,
+          "cheby1 LP init(NaN ripple) fail-closed, num_sections cleared");
+
+    cheby2_lp_4th_t cnan2lp;
+    memset(&cnan2lp, 0xAB, sizeof cnan2lp);
+    cheby2_lp_4th_init(&cnan2lp, NAN, 48000.0f, 40.0f);
+    CHECK(cnan2lp.valid == 0 && cnan2lp.num_sections == 0,
+          "cheby2 LP init(NaN fc) fail-closed, num_sections cleared");
+
+    cheby2_bp_4th_t cnan2bp;
+    memset(&cnan2bp, 0xAB, sizeof cnan2bp);
+    cheby2_bp_4th_init(&cnan2bp, 1000.0f, NAN, 48000.0f, 40.0f);
+    CHECK(cnan2bp.valid == 0 && cnan2bp.num_sections == 0,
+          "cheby2 BP init(NaN fc2) fail-closed, num_sections cleared");
 
     /* ── 无效滤波器的直通行为 ─────────────────────────────────────────── */
 
@@ -429,6 +489,7 @@ int main(void)
             cheby2_bp_##ol##_init(&swf, sw_bands[sw_bi][0], sw_bands[sw_bi][1], \
                                   1000.0f, sw_rs[sw_ri]); \
             CHECK(swf.valid == 1, "sweep cheby2 BP " #ol " valid"); \
+            CHECK(swf.num_sections == (ns), "sweep cheby2 BP  " #ol " section count"); \
             if (swf.valid) { \
                 float swg = ((ord) % 2 == 0) \
                           ? powf(10.0f, -sw_rs[sw_ri] / 20.0f) : 0.0f; \
@@ -452,6 +513,7 @@ int main(void)
             cheby2_bs_##ol##_init(&swf, sw_bands[sw_bi][0], sw_bands[sw_bi][1], \
                                   1000.0f, sw_rs[sw_ri]); \
             CHECK(swf.valid == 1, "sweep cheby2 BS " #ol " valid"); \
+            CHECK(swf.num_sections == (ns), "sweep cheby2 BS  " #ol " section count"); \
             if (swf.valid) { \
                 y = cascade_dc_gain(swf.sections, swf.num_sections); \
                 CHECK(CLOSE(y, 1.0f, 0.1f), "sweep cheby2 BS " #ol " DC window"); \
@@ -476,6 +538,7 @@ int main(void)
             swf.valid = 0; \
             cheby1_lp_##ol##_init(&swf, sw_lp_fc[sw_fi], 1000.0f, sw_lp_rp[sw_ri]); \
             CHECK(swf.valid == 1, "sweep cheby1 LP " #ol " valid"); \
+            CHECK(swf.num_sections == (ns), "sweep cheby1 LP  " #ol " section count"); \
             if (swf.valid) { \
                 float swg = ((ord) % 2 == 0) \
                           ? powf(10.0f, -sw_lp_rp[sw_ri] / 20.0f) : 1.0f; \
@@ -493,7 +556,15 @@ int main(void)
 
     /* ── Sweep: cheby1 HP/BP/BS 全阶矩阵 ───────────────────────────────
        补齐 X-macro 生成 init 的测试覆盖（LP 已有全阶扫掠）。
-       init 内部已做级联增益校验，此处复核窗口并约束 max|H|。────── */
+       init 内部已做级联增益校验，此处复核窗口并约束 max|H|。
+
+       check_cascade_gains 的窗口标定（在部署后的 f32 系数上实测）：接受的设计
+       实现误差 ≤ ~3.4e-2（最坏：fc ≈ 6 Hz@48 kHz 窄带，f32 系数量化的真实
+       体现）；已确认的配对缺陷偏差 ≥ 0.45。
+       ±0.1 窗口（期望为精确结构增益 0/1）两侧分离 ≈ 2.9× / 4.5×；
+       ±0.25 窗口（纹波边缘）在缺陷一侧只剩 ≈ 1.8×（0.45 / 0.25）——它主要
+       靠“期望值本身可能很小”而非靠窗口宽度设防（rs = 40 dB 时 Nyquist 期望
+       只有 0.01）。改窗口常数要重新核对这两条边界。─────────────── */
 
     #define X(ord, ns, ol) \
         for (int sw_fi = 0; sw_fi < 2; sw_fi++) \
@@ -502,6 +573,7 @@ int main(void)
             swf.valid = 0; \
             cheby1_hp_##ol##_init(&swf, sw_lp_fc[sw_fi], 1000.0f, sw_lp_rp[sw_ri]); \
             CHECK(swf.valid == 1, "sweep cheby1 HP " #ol " valid"); \
+            CHECK(swf.num_sections == (ns), "sweep cheby1 HP  " #ol " section count"); \
             if (swf.valid) { \
                 float swg = ((ord) % 2 == 0) \
                           ? powf(10.0f, -sw_lp_rp[sw_ri] / 20.0f) : 1.0f; \
@@ -554,6 +626,7 @@ int main(void)
             cheby1_bs_##ol##_init(&swf, sw_bands[sw_bi][0], sw_bands[sw_bi][1], \
                                   1000.0f, sw_lp_rp[sw_ri]); \
             CHECK(swf.valid == 1, "sweep cheby1 BS " #ol " valid"); \
+            CHECK(swf.num_sections == (ns), "sweep cheby1 BS  " #ol " section count"); \
             if (swf.valid) { \
                 float swg = ((ord) % 2 == 0) \
                           ? powf(10.0f, -sw_lp_rp[sw_ri] / 20.0f) : 1.0f; \
@@ -580,6 +653,7 @@ int main(void)
             swf.valid = 0; \
             cheby2_lp_##ol##_init(&swf, sw_lp_fc[sw_fi], 1000.0f, sw_rs[sw_ri]); \
             CHECK(swf.valid == 1, "sweep cheby2 LP " #ol " valid"); \
+            CHECK(swf.num_sections == (ns), "sweep cheby2 LP  " #ol " section count"); \
             if (swf.valid) { \
                 float swg = ((ord) % 2 == 0) \
                           ? powf(10.0f, -sw_rs[sw_ri] / 20.0f) : 0.0f; \

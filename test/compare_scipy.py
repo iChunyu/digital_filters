@@ -21,6 +21,18 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = sys.argv[1] if len(sys.argv) > 1 else SCRIPT_DIR
 FS = 400.0
 
+# 容差：稳态段绝对误差上限。f32 系数与 f32 时域递推的实测偏差在 1e-6~1.5e-5
+# 量级（见 README），1e-4 留了约 7 倍余量。
+TOL = 1e-4
+
+# 失败必须反映到退出码——ctest 只看退出码，只打印字符串等于恒通过。
+FAILURES = []
+
+
+def fail(msg):
+    FAILURES.append(msg)
+
+
 def check_correctness(label, data, col, sos, x):
     scipy_out = signal.sosfilt(sos, x)
     # 只比最后 10% 的样本，考察稳态精度
@@ -28,7 +40,12 @@ def check_correctness(label, data, col, sos, x):
     err = data[col][ss_start:] - scipy_out[ss_start:]
     maxe = np.max(np.abs(err))
     rms = np.sqrt(np.mean(err**2))
-    status = "OK" if maxe < 1e-4 else "FAIL"
+    # 注意：`nan > TOL` 恒为 False，NaN 会静默通过。显式拦 NaN。
+    if not np.isfinite(maxe):
+        fail(f"{label}: 非有限误差 (max_err={maxe})，说明 C 侧输出或参考值含 NaN/Inf")
+    elif maxe >= TOL:
+        fail(f"{label}: max_err={maxe:.3e} >= {TOL:.0e}")
+    status = "OK" if (np.isfinite(maxe) and maxe < TOL) else "FAIL"
     print(f"  {label:8s}: max_err={maxe:.2e}  rms={rms:.2e}  [{status}]")
     return scipy_out
 
@@ -50,7 +67,7 @@ if os.path.isfile(csv_b):
                             btype=btype, fs=FS, output='sos')
         check_correctness(label, data_b, col, sos, x)
 else:
-    print("CSV not found — run test_butter_with_py first")
+    fail("test_butter_data.csv 不存在——CSV 生成器没跑或没注册")
 
 # --- Chebyshev ---
 print("\n" + "=" * 60)
@@ -74,4 +91,13 @@ if os.path.isfile(csv_c):
                        btype=btype, fs=FS, output='sos')
         check_correctness(title, data_c, col, sos, x)
 else:
-    print("CSV not found — run test_cheby_with_py first")
+    fail("test_cheby_data.csv 不存在——CSV 生成器没跑或没注册")
+
+# ── 结论 ─────────────────────────────────────────────────────────────────────
+print("=" * 60)
+if FAILURES:
+    print(f"FAILED: {len(FAILURES)} 项")
+    for f in FAILURES:
+        print("  - " + f)
+    sys.exit(1)
+print("OK: 全部 butter/cheby 列与 scipy 参考在稳态段内一致")

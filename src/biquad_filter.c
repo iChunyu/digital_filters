@@ -6,34 +6,21 @@
 #include "biquad_filter.h"
 #include <math.h>
 
-/**
- * @brief 浮点绝对值，不依赖 libm，也不依赖编译器内建。
- *
- * 与 `fabsf` 在所有输入上判定等价：有限值与 ±inf 逐位一致；-0.0f
- * 返回 -0.0f（与 +0.0f 比较相等，本文件的用法全是幅值比较，不受
- * 影响）；NaN 返回 NaN，而 `NaN >= x` 恒假，判定结果与 `fabsf(NaN)`
- * 相同。
- *
- * 存在的理由：`fabsf` 在 GCC/Clang 上默认是内建并被内联，但
- * `-fno-builtin` 下退化成真实的 libm 符号。本库对外承诺 biquad 层
- * 零 libm 依赖（裸机不链 libm 也能用），这个承诺不该建立在编译器
- * 的内建行为上。
- *
- * @param x  输入值。
- * @return   |x|。
- */
-static inline float abs_f(float x)
-{
-    return (x < 0.0f) ? -x : x;
-}
+#include "biquad_filter.h"
+#include <math.h>
 
 /**
  * @brief 三项补偿求和（TwoSum 式）。
  *
- * 裸 f32 计算 1 + a1 + a2 在真余量为 1.0 的若干 ulp 时会恰好消成
- * 0.0f（窄带设计：a1 ≈ −2，a2 ≈ 1 − ε）——把极点远离单位圆的
- * 稳定滤波器误拒，同样也会误算 reset 的分母。把每次加法的
- * 舍入误差折回即可在 f32 代价下恢复余量。
+ * 补偿的收益在 reset，不在 Jury 闸：`biquad_filter_reset` 拿 1 + a1 + a2 做
+ * 分母，裸 f32 求和可能把真值 ~3e-8 的余量舍成 0.0f，于是复位把状态清零，
+ * 而按 f32 系数的真稳态该是 equilibrium / 3e-8。折回每次加法的舍入误差即可
+ * 在 f32 代价下拿回真余量。
+ *
+ * 注意 Jury 那条的真余量要么落在 Sterbenz 精确区（|a1| ∈ [0.5, 2]），要么
+ * 对应极点落在 z ≈ 1 而被下面的半径裕量闸正当拒掉，所以补偿从不改变 init
+ * 的判决——此处用它与 reset 同口径，也为将来单独放宽半径闸时仍按真余量判。
+ * 实测与标定见 test/test_biquad.c 的「sum3f 补偿」段。
  *
  * @param x  第一加数。
  * @param y  第二加数。
@@ -45,10 +32,10 @@ static float sum3f(float x, float y, float z)
     float s = x;
     float c = 0.0f;
     float t = s + y;
-    c += (abs_f(s) >= abs_f(y)) ? (s - t) + y : (y - t) + s;
+    c += (fabsf(s) >= fabsf(y)) ? (s - t) + y : (y - t) + s;
     s = t;
     t = s + z;
-    c += (abs_f(s) >= abs_f(z)) ? (s - t) + z : (z - t) + s;
+    c += (fabsf(s) >= fabsf(z)) ? (s - t) + z : (z - t) + s;
     s = t;
     return s + c;
 }
@@ -99,7 +86,10 @@ uint8_t biquad_filter_init(biquad_filter_t *filter, const float num_z[3],
                            const float den_z[3])
 {
     /* 拒绝为零/非有限的首项分母。零会导致除零；±Inf 会让 inv = 0，
-       悄悄部署出分子全零的"静音"滤波器——直通是更安全的兜底。 */
+       悄悄部署出分子全零的"静音"滤波器——直通是更安全的兜底。
+       注意本闸只拦 0/非有限：den_z[0] = 1e30f 这种**有限但极大**的值会归一化
+       出 b0 ≈ 1e-30 的近静音滤波器并返回 1。管线内由 check_cascade_gains 的
+       DC/Nyquist 窗口兜住；直接调用本函数的调用方需自行确认增益量级。 */
     if (den_z[0] == 0.0f || !isfinite(den_z[0])) {
         biquad_filter_set_empty(filter);
         return 0;
@@ -116,10 +106,8 @@ uint8_t biquad_filter_init(biquad_filter_t *filter, const float num_z[3],
     filter->den_z[1] = den_z[1] * inv;
     filter->den_z[2] = den_z[2] * inv;
 
-    /*
-     * 拒绝非有限系数（例如设计管线里的增益溢出）。否则 NaN/Inf 分子会
-     * 通过下面的 Jury 检查——它只看分母——然后毒化输出。
-     */
+    /* 拒绝非有限系数（如管线里的增益溢出）：NaN/Inf 分子会通过下面的 Jury
+       检查（它只看分母）然后毒化输出。 */
     if (!(isfinite(filter->num_z[0]) && isfinite(filter->num_z[1])
           && isfinite(filter->num_z[2]) && isfinite(filter->den_z[1])
           && isfinite(filter->den_z[2]))) {
@@ -129,15 +117,10 @@ uint8_t biquad_filter_init(biquad_filter_t *filter, const float num_z[3],
 
     /*
      * 稳定性检查——二阶系统的三个 Jury 条件：
-     *   |a2| < 1
-     *   1 + a1 + a2 > 0
-     *   1 - a1 + a2 > 0
-     * 任一条件不满足即不稳定；退回单位直通。
-     * 两个 Jury 和用补偿求和（见 sum3f）：对真余量为 1.0 的若干 ulp 的
-     * 窄带设计，裸 f32 求值会恰好消成 0.0f，把稳定滤波器误拒。
-     * 反过来，补偿和**恰好**为 0.0f 说明 f32 系数把极点放到了单位圆上
-     * （量化塌缩到 z = ±1）——那种确实该拒，且下面的裕量检查分辨不出
-     * 它的半径。
+     *   |a2| < 1、1 + a1 + a2 > 0、1 - a1 + a2 > 0
+     * 任一不满足即不稳定，退回单位直通。判定用补偿和（见 sum3f）：本闸独立
+     * 承担教科书稳定性契约，不依赖下面半径裕量闸的存在——后者虽然蕴含了这
+     * 三条，但两层判据写法的意图不同（见 test/test_biquad.c 的档位）。
      */
     float a1 = filter->den_z[1];
     float a2 = filter->den_z[2];
@@ -151,21 +134,14 @@ uint8_t biquad_filter_init(biquad_filter_t *filter, const float num_z[3],
 
     /*
      * 稳定性裕量。上面的 Jury 条件允许极点任意贴近单位圆；f32 下
-     * a2 = 1 − 2⁻²⁴ 照样通过，滤波器会振铃数百万个样本（每样本收缩
-     * ~6e-8）。拒绝任何半径 r > 0.99995（1 − r < 5e-5）的极点。
-     *
-     * 判定按极点半径本身做，不按 a2：a2 = r1·r2 对非等实根对的主导极点
-     * 有盲区（r1 ≈ 1、r2 ≈ 0.85 → a2 ≈ 0.85 轻松过关），而单侧的
-     * a2 > 0.9999 检查会漏掉异号实根对（a2 ≈ −0.99995）。
-     * 共轭对 r² = a2（于是 r > 0.99995 ⟺ a2 > 0.9999）；实根
-     * r_max = (|a1| + √(a1² − 4·a2)) / 2，经过改写使其不需要 sqrtf——
-     * biquad init 路径必须保持可被不链 libm 的裸机固件调用。该公式
-     * 同样覆盖一阶节（a2 = 0 → r_max = |a1|）。
-     *
-     * a1² − 4·a2 用 Dekker 分裂补偿计算：宽带 BP/BS 设计的近实极点对
-     * 落在距单位圆 ~1e-4 处，那里裸 f32 判别式带 ~5e-7 噪声，而真值
-     * （如 −4·(虚部)² ≈ −1e-7）并不更大——共轭/实根分支之间的符号翻转
-     * 会把裕量判定变成对合法设计的抛硬币。
+     * a2 = 1 − 2⁻²⁴ 照样通过，滤波器会振铃数百万个样本（每样本收缩 ~6e-8）。
+     * 拒绝任何极点半径 r > 0.99995（1 − r < 5e-5）。判定按半径本身做、不按
+     * a2：a2 = r1·r2 对主导极点不是 a2 的实根对有盲区，单侧的 a2 > 0.9999
+     * 检查也会漏掉异号实根对。共轭对看 a2 = r²；实根用
+     * r_max = (|a1| + √(a1² − 4a2))/2，两边平方改写成不需要 sqrtf 的形式——
+     * 这条 init 路径要保持可在中断上下文中廉价执行。判别式用 Dekker 分裂
+     * 补偿：宽带 BP/BS 的近实极点对落在距单位圆 ~1e-4 处，裸 f32 判别式在那
+     * 里带 ~5e-7 噪声，足以对合法设计抛硬币。边界档位见 test/test_biquad.c。
      */
     float p = a1 * 4097.0f;          /* Dekker 分裂：a1 = hi + lo */
     float hi = p - (p - a1);
@@ -178,7 +154,7 @@ uint8_t biquad_filter_init(biquad_filter_t *filter, const float num_z[3],
         reject = a2 > 0.9999f;                 /* 共轭对：a2 = r² */
     } else {
         /* r_max > 0.99995  ⟺  √disc > 1.9999 − |a1|（两边平方）。 */
-        float rhs = 1.9999f - abs_f(a1);
+        float rhs = 1.9999f - fabsf(a1);
         reject = (rhs < 0.0f) || (disc > rhs * rhs);
     }
     if (reject) {
@@ -218,15 +194,13 @@ void biquad_filter_reset(biquad_filter_t *filter, float equilibrium)
     }
 
     /*
-     * 稳态：x 为常数时 w[0]=w[1]=w[2]=w_ss。
-     * 由状态方程：
-     *   x = w_ss + a1*w_ss + a2*w_ss  =>  w_ss = x / (1 + a1 + a2)
+     * 稳态：x 为常数时 w[0]=w[1]=w[2]=w_ss，由状态方程
+     *   x = w_ss + a1·w_ss + a2·w_ss  =>  w_ss = x / (1 + a1 + a2)。
      *
-     * 这是公开结构体上的公开 API——系数不必先经过 biquad_filter_init()。
-     * 补偿求和避免分母的 f32 求值在 init 通过的窄带滤波器上恰好消成
-     * 0.0f；下面的守卫实现 @note 里的契约：1 + a1 + a2 == 0（如纯积分器）
-     * 无稳态 → 强制清零；分母小到非规格化会让 w_ss 溢出为 inf、进而用
-     * NaN 毒化此后每次 update，所以在那里也强制清零。
+     * 这是公开结构体上的公开 API，系数不必先过 biquad_filter_init()。补偿求和
+     * 避免分母在窄带滤波器上恰好消成 0；下面的守卫实现 @note 里的契约：
+     * 1 + a1 + a2 == 0（如纯积分器）无稳态 → 清零，分母小到让 w_ss 溢出为
+     * inf、进而毒化此后每次 update 也清零。
      */
     float denom = sum3f(1.0f, filter->den_z[1], filter->den_z[2]);
     if (denom == 0.0f || !isfinite(denom)) {

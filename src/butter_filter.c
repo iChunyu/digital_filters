@@ -52,29 +52,31 @@ static const complex_t butter_proto[8][8] = {
                {-0.1950903220f,  0.9807852804f}},
 };
 
-/* ================================================================== */
-/*  各类型 init 辅助函数                                               */
-/* ================================================================== */
 
-/**
- * @brief Butterworth 低通设计：原型 → 管线 → 增益校验。
+/* ================================================================== */
+/*  各类型设计辅助（static；公开 API 见 include/butter_filter.h）        */
+/* ================================================================== */
+/*
+ * 签名：butter_{lp,hp,bp,bs}_init(sections, max_sections, order, ...)
+ * 流程：ROM 原型表 → 共享管线 design_filter → 级联增益校验。
  *
- * 参数越界（order 不在 1..8、fc 不在 (0, fs/2)）直接失败；
- * 管线或级联增益校验失败同样返回 0（调用方部署直通）。
- * 期望级联增益：DC 1，Nyquist 0。
+ * 参数越界（order 不在 1..8，或频率不满足 0 < fc < fs/2、fc1 < fc2 < fs/2）或任一
+ * 校验失败都返回 0，由 X-macro 宏体负责把 valid / num_sections 清零。
  *
- * @param[out] sections      biquad 节数组。
- * @param[in]  max_sections  sections 容量。
- * @param[in]  order         原型阶数。
- * @param[in]  fc            截止频率（Hz）。
- * @param[in]  fs            采样频率（Hz）。
- * @return                   部署的节数，0 表示失败。
+ * 期望的 DC/Nyquist 增益按类型分别是 (1,0) (0,1) (0,0) (1,1)，与该类型的结构零点
+ * 位置一一对应，全是精确值——所以 butter 只用 ±0.1 窗口，从不使用纹波档 ±0.25。
+ * 标定与回归档位见 test/test_butter.c。
  */
+
+/* 低通：期望 DC 1、Nyquist 0 */
 static uint8_t butter_lp_init(biquad_filter_t *sections,
                                       uint8_t max_sections,
                                       uint8_t order, float fc, float fs)
 {
-    if (order == 0 || order > 8 || fc <= 0.0f || fc >= fs * 0.5f)
+    /* 入口闸一律写 !(x > 0) 而不是 x <= 0：后者与 NaN 比较恒假，会把 NaN 放行
+       （NaN 会一路传到 prewarp，靠下游 design_filter 的有限性闸兜成 fail-closed，
+       防线就只剩一层）。本文件 3 处入口闸同此写法。 */
+    if (order == 0 || order > 8 || !(fc > 0.0f) || !(fc < fs * 0.5f))
         return 0;
 
     float wc = 2.0f * (float)M_PI * prewarp(fc, fs);
@@ -88,23 +90,12 @@ static uint8_t butter_lp_init(biquad_filter_t *sections,
     return n;
 }
 
-/**
- * @brief Butterworth 高通设计：原型 → 管线 → 增益校验。
- *
- * 失败返回 0（调用方部署直通）。期望级联增益：DC 0，Nyquist 1。
- *
- * @param[out] sections      biquad 节数组。
- * @param[in]  max_sections  sections 容量。
- * @param[in]  order         原型阶数。
- * @param[in]  fc            截止频率（Hz）。
- * @param[in]  fs            采样频率（Hz）。
- * @return                   部署的节数，0 表示失败。
- */
+/* 高通：期望 DC 0、Nyquist 1 */
 static uint8_t butter_hp_init(biquad_filter_t *sections,
                                       uint8_t max_sections,
                                       uint8_t order, float fc, float fs)
 {
-    if (order == 0 || order > 8 || fc <= 0.0f || fc >= fs * 0.5f)
+    if (order == 0 || order > 8 || !(fc > 0.0f) || !(fc < fs * 0.5f))
         return 0;
 
     float wc = 2.0f * (float)M_PI * prewarp(fc, fs);
@@ -118,29 +109,15 @@ static uint8_t butter_hp_init(biquad_filter_t *sections,
     return n;
 }
 
-/**
- * @brief Butterworth 带通设计：原型 → 管线 → 增益校验。
- *
- * 参数越界（order 不在 1..8、fc1/fc2 不满足
- * 0 < fc1 < fc2 < fs/2）或校验失败返回 0（调用方部署直通）。
- * 期望级联增益：DC 与 Nyquist 均为 0。
- *
- * @param[out] sections      biquad 节数组。
- * @param[in]  max_sections  sections 容量。
- * @param[in]  order         原型阶数。
- * @param[in]  fc1           下带边（Hz）。
- * @param[in]  fc2           上带边（Hz）。
- * @param[in]  fs            采样频率（Hz）。
- * @return                   部署的节数，0 表示失败。
- */
+/* 带通：期望 DC 0、Nyquist 0 */
 static uint8_t butter_bp_init(biquad_filter_t *sections,
                                       uint8_t max_sections,
                                       uint8_t order,
                                       float fc1, float fc2, float fs)
 {
-    if (order == 0 || order > 8 || fc1 <= 0.0f || fc1 >= fs * 0.5f)
+    if (order == 0 || order > 8 || !(fc1 > 0.0f) || !(fc1 < fs * 0.5f))
         return 0;
-    if (fc2 <= fc1 || fc2 >= fs * 0.5f) return 0;
+    if (!(fc2 > fc1) || !(fc2 < fs * 0.5f)) return 0;
 
     float wc1 = 2.0f * (float)M_PI * prewarp(fc1, fs);
     float wc2 = 2.0f * (float)M_PI * prewarp(fc2, fs);
@@ -155,29 +132,15 @@ static uint8_t butter_bp_init(biquad_filter_t *sections,
     return n;
 }
 
-/**
- * @brief Butterworth 带阻设计：原型 → 管线 → 增益校验。
- *
- * 参数越界（order 不在 1..8、fc1/fc2 不满足
- * 0 < fc1 < fc2 < fs/2）或校验失败返回 0（调用方部署直通）。
- * 期望级联增益：DC 与 Nyquist 均为 1。
- *
- * @param[out] sections      biquad 节数组。
- * @param[in]  max_sections  sections 容量。
- * @param[in]  order         原型阶数。
- * @param[in]  fc1           下带边（Hz）。
- * @param[in]  fc2           上带边（Hz）。
- * @param[in]  fs            采样频率（Hz）。
- * @return                   部署的节数，0 表示失败。
- */
+/* 带阻：期望 DC 1、Nyquist 1 */
 static uint8_t butter_bs_init(biquad_filter_t *sections,
                                       uint8_t max_sections,
                                       uint8_t order,
                                       float fc1, float fc2, float fs)
 {
-    if (order == 0 || order > 8 || fc1 <= 0.0f || fc1 >= fs * 0.5f)
+    if (order == 0 || order > 8 || !(fc1 > 0.0f) || !(fc1 < fs * 0.5f))
         return 0;
-    if (fc2 <= fc1 || fc2 >= fs * 0.5f) return 0;
+    if (!(fc2 > fc1) || !(fc2 < fs * 0.5f)) return 0;
 
     float wc1 = 2.0f * (float)M_PI * prewarp(fc1, fs);
     float wc2 = 2.0f * (float)M_PI * prewarp(fc2, fs);

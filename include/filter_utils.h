@@ -33,10 +33,9 @@ typedef struct {
  *
  * @param fd  目标数字截止频率（Hz），须满足 0 < fd < fs/2。
  * @param fs  采样频率（Hz）。
- * @return    等效模拟截止频率（Hz）；@p fd 或 @p fs 越界（含 NaN）时
- *            返回 NaN——双线性映射在 Nyquist 以外无定义，NaN 会被
- *            下游 `design_filter` 的有限性闸拦下变为直通，而不是
- *            悄悄产出错误的滤波器。
+ * @return    等效模拟截止频率（Hz）；@p fd 或 @p fs 越界（含 NaN）时返回
+ *            NaN——双线性映射在 Nyquist 以外无定义，NaN 会被下游
+ *            `design_filter` 的有限性闸拦下变为直通。
  */
 float prewarp(float fd, float fs);
 
@@ -153,9 +152,9 @@ float bilinear_zpk_gain(float k, const complex_t *z, uint8_t nz,
  *
  * k = k · s^degree · Re(∏(K − z) / ∏(K − p))，K = 2·fs。
  *
- * s 因子与 (K − p) 除法交错折叠，避免任何中间量溢出 f32——
- * 单独计算 s^degree 在近 Nyquist 设计（wc^8 ≈ FLT_MAX）上先溢出，
- * 之后同量级的 ∏(K − p) 因子来不及抵消。
+ * s 因子与 (K − p) 除法交错折叠：单独算 s^degree 在近 Nyquist 的
+ * wc^8 ≈ FLT_MAX 处先溢出，后面的 ∏(K − p) 再也抵消不回来。回归档位见
+ * test/test_butter.c 的超宽带与近 Nyquist sweep。
  *
  * @param k       当前系统增益。
  * @param s       每阶缩放因子：LP 为 wc（rad/s），BP 为带宽 ξ（rad/s）。
@@ -174,17 +173,12 @@ float bilinear_zpk_gain_scaled(float k, float s, uint8_t degree,
 /**
  * @brief 把 z 域零极点数组转换为二阶节（SOS）系数。
  *
- * 用"最不利极点优先"算法配对极点与最近的零点，生成 biquad 系数。
- * 每节分子增益为 1；系统总增益 @p k 只施加到第一节分子
- * （与 scipy zpk2sos 约定一致）。
+ * 用"最不利极点优先"算法配对极点与最近的零点。每节分子增益为 1，系统总增益
+ * @p k 只施加到第一节分子（与 scipy zpk2sos 约定一致）。直接在调用方的数组上
+ * 工作（只读），归属跟踪用内部 used[] 位图。
  *
- * 直接在调用方的零极点数组上工作（只读，形参为 const），不做内部
- * 拷贝（省 ~256 字节栈——zpk2sos 在 init 调用链深处被调用，MCU 上
- * 意义显著）；归属跟踪用内部 used[] 位图。
- *
- * Fail-closed：零极点集不平衡、任一元素未配对（如合成共轭）、
- * 或各节根无法复现输入零极点多重集（跨对误认领）时返回 0。
- * 调用方必须把 0 视为"设计失败 → 部署直通"。
+ * Fail-closed：零极点集不平衡、任一元素未配对（如合成共轭）、或各节根无法
+ * 复现输入零极点多重集（跨对误认领）时返回 0，调用方按"设计失败 → 直通"处理。
  *
  * @param[in]  zeros  z 域零点数组（n 个）。
  * @param[in]  poles  z 域极点数组（n 个）。
@@ -201,16 +195,14 @@ uint8_t zpk2sos(const complex_t *zeros, const complex_t *poles, uint8_t n,
  * @brief 共享 IIR 设计管线：模拟原型 → 频率变换 → 增益折叠 →
  *        双线性 → zpk2sos → 部署。
  *
- * Butterworth 与 Chebyshev 族共用（管线相同、原型不同）：
- * Butterworth 传 ROM 极点表 + k=1、nz=0；Chebyshev 运行时计算
- * 原型，传自己的 k 与有限零点。管线只此一份，每个 fail-closed
- * 咽喉点（输入边界、k 有限非零、节数上限、逐节 init、增益窗口）
- * 恰好存在一次。
+ * Butterworth 与 Chebyshev 族共用（管线相同、原型不同）。管线只此一份，每个
+ * fail-closed 咽喉点（输入边界、k 有限非零、节数上限、逐节 init、增益窗口）
+ * 恰好存在一次；各咽喉点的含义与标定见对应族的 test/ 存档。
  *
- * Fail-closed：任一咽喉点失败返回 0（调用方部署直通）。输入边界
- * 同样设闸——@p np 超出内部工作数组容量（ZPK2SOS_MAX_N = 16）或
- * @p nz > @p np 时直接返回 0，不越界也不下溢。族 API 上限为原型
- * 8 阶（变换后 16），直接调用本函数同样受此约束。
+ * Fail-closed：任一咽喉点失败返回 0（调用方部署直通）。输入边界同样设闸——
+ * @p np 超出 ZPK2SOS_MAX_N = 16 或 @p nz > @p np 时直接返回 0，不越界也不
+ * 下溢；BP/BS 会把原型零极点一分为二，故这两种类型的原型上限是
+ * ZPK2SOS_MAX_N / 2 = 8 阶。
  *
  * @param[out] sections      输出 biquad 数组。
  * @param[in]  max_sections  sections 容量。
@@ -221,7 +213,9 @@ uint8_t zpk2sos(const complex_t *zeros, const complex_t *poles, uint8_t n,
  * @param[in]  k             原型增益。
  * @param[in]  proto_poles   原型极点，np 个（拷贝进内部数组）。
  * @param[in]  np            原型极点数。
- * @param[in]  proto_zeros   原型有限零点，nz 个（可为 NULL）。
+ * @param[in]  proto_zeros   原型有限零点，nz 个。仅当 @p nz == 0 时可为 NULL；
+ *                           @p nz > 0 却传 NULL 属参数错误，直接返回 0（不静默
+ *                           跳过拷贝、不在未初始化的工作数组上继续跑）。
  * @param[in]  nz            原型有限零点数。
  * @return                   部署的节数，0 表示失败。
  */
@@ -235,15 +229,12 @@ uint8_t design_filter(biquad_filter_t *sections, uint8_t max_sections,
 /**
  * @brief 解析级联 DC 与 Nyquist 增益校验。
  *
- * 错但稳定的零极点配对与增益缩放错误能通过所有逐节检查（每节都
- * 有限且 Jury 稳定），却毁掉响应形状——已确认的缺陷实测 DC 增益
- * 97.9、带阻上 350× 谐振（本应 ≈ 1）。H(0) 与 H(π) 是精确有理
- * 求值（无采样、无三角，init 时 O(节数) 成本）。
+ * 错但稳定的零极点配对与增益缩放错误能通过所有逐节检查，却毁掉响应形状——
+ * 已确认的缺陷实测 DC 增益 97.9、带阻上 350× 谐振。H(0) 与 H(π) 是精确有理
+ * 求值（无采样、无三角，init 时 O(节数)）。
  *
- * 窗口标定（在部署后的 f32 系数上实测）：接受的设计实现误差
- * ≤ ~3.4e-2（最坏：fc ≈ 6 Hz@48 kHz 窄带，f32 系数量化真实体现）；
- * 已确认的配对缺陷偏差 ≥ 0.45。±0.1 / ±0.25 窗口在两侧均保持
- * ≥ 3× 分离。
+ * 窗口取 ±0.1（精确结构增益 0/1）与 ±0.25（纹波边缘，缺陷侧分离仅 ~1.8×）。
+ * 标定、两侧分离倍数与回归档位见 test/test_cheby.c。
  *
  * @param[in] sections      已部署的 biquad 级联。
  * @param[in] num_sections  已部署的节数。
