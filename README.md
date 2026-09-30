@@ -299,6 +299,6 @@ digital_filters/
 │   ├── compare_scipy.py          # 稳态精度对比
 │   └── verify_zpk_gain.py        # float32 精度验证（独立复现 scipy 管线）
 ├── CMakeLists.txt
-├── CLAUDE.md
+├── AGENTS.md                    # agent 指引
 └── README.md
 ```

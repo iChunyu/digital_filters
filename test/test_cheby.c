@@ -527,7 +527,7 @@ int main(void)
                                   1000.0f, sw_lp_rp[sw_ri]); \
             /* 7 阶 × [20,480] × rp=3：带边上沿逼近 Nyquist，极点进入 \
                z=+1 近旁 5e-5 裕量内——fail-closed 拒绝属预期 \
-               （CLAUDE.md 频率包络）。 */ \
+               （AGENTS.md"已知边界"）。 */ \
             uint8_t sw_ok = ((ord) == 7 && (sw_bi) == 1 && (sw_ri) == 1) ? 0 : 1; \
             CHECK(swf.valid == sw_ok, "sweep cheby1 BP " #ol " valid"); \
             if (swf.valid) { \
@@ -603,7 +603,7 @@ int main(void)
             cheby2_hp_##ol##_init(&swf, sw_lp_fc[sw_fi], 1000.0f, sw_rs[sw_ri]); \
             /* 5 阶 × fc=480 × rs=0.5：截止频率 0.96·Nyquist，极点进入 \
                z=−1 近旁 5e-5 裕量内——fail-closed 拒绝属预期 \
-               （CLAUDE.md 频率包络）。 */ \
+               （AGENTS.md"已知边界"）。 */ \
             uint8_t sw_ok = ((ord) == 5 && (sw_fi) == 1 && (sw_ri) == 0) ? 0 : 1; \
             CHECK(swf.valid == sw_ok, "sweep cheby2 HP " #ol " valid"); \
             if (swf.valid) { \

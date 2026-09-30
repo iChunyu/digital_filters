@@ -869,7 +869,8 @@ uint8_t zpk2sos(const complex_t *zeros, const complex_t *poles, uint8_t n,
 /*
  * BP/BS 变换后的最大原型阶数：2 × 8 = 16 个零极点，ceil(16/2) = 8 节。
  * init 期间栈用量：poles（128 B）+ zeros（128 B）+ sos（192 B）≈ 448 B，
- * 加上调用侧的原型数组（~128 B）——即 CLAUDE.md 记录的 ~800 B 峰值。
+ * 加上调用侧的原型数组（~128 B）。整条链的实测栈峰值 992 B
+ * （cheby2_bp_init 链，arm-none-eabi-gcc 16.2 / Cortex-M4 -Os）。
  */
 
 uint8_t design_filter(biquad_filter_t *sections, uint8_t max_sections,
